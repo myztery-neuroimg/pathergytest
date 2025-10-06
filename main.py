@@ -158,6 +158,117 @@ def warp_to_base(src_pil: Image.Image, matrix: np.ndarray, size: Tuple[int, int]
     return Image.fromarray(cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
 
 
+def _content_mask(pil_img: Image.Image, *, threshold: int = 5) -> np.ndarray:
+    """Return a boolean mask of pixels that contain visual content."""
+
+    array = np.array(pil_img)
+    if array.ndim == 3:  # RGB
+        mask = np.any(array > threshold, axis=2)
+    else:
+        mask = array > threshold
+    return mask
+
+
+def _refine_mask(
+    mask: np.ndarray,
+    *,
+    kernel_size: int = 5,
+    min_component_area: int = 500,
+) -> np.ndarray:
+    """Use morphological operations to clean noisy mask regions."""
+
+    if mask.dtype != np.uint8:
+        mask = mask.astype(np.uint8) * 255
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    refined = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    refined = cv2.morphologyEx(refined, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    if min_component_area <= 0:
+        return refined
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(refined)
+    filtered = np.zeros_like(refined)
+    for idx in range(1, num_labels):
+        if stats[idx, cv2.CC_STAT_AREA] >= min_component_area:
+            filtered[labels == idx] = 255
+    return filtered
+
+
+def common_content_bbox(
+    images: Sequence[Image.Image],
+    *,
+    threshold: int = 5,
+    kernel_size: int = 7,
+    min_component_area: int = 1000,
+) -> Tuple[int, int, int, int] | None:
+    """Find the bounding box shared by non-empty pixels across ``images``.
+
+    The shared mask is computed with morphological closing/opening and component
+    filtering to emphasise the dominant overlapping footprint while suppressing
+    small mismatches.
+    """
+
+    if not images:
+        return None
+
+    refined_masks = []
+    for image in images:
+        raw_mask = _content_mask(image, threshold=threshold)
+        refined_masks.append(
+            _refine_mask(
+                raw_mask,
+                kernel_size=kernel_size,
+                min_component_area=min_component_area,
+            )
+        )
+
+    intersection = refined_masks[0]
+    for mask in refined_masks[1:]:
+        intersection = cv2.bitwise_and(intersection, mask)
+
+    intersection = _refine_mask(
+        intersection,
+        kernel_size=kernel_size,
+        min_component_area=min_component_area,
+    )
+
+    coords = cv2.findNonZero(intersection)
+    if coords is None:
+        return None
+
+    x, y, w, h = cv2.boundingRect(coords)
+    if w == 0 or h == 0:
+        return None
+
+    left, top = int(x), int(y)
+    right, bottom = int(x + w), int(y + h)
+    return (left, top, right, bottom)
+
+
+def crop_images(
+    images: Sequence[Image.Image],
+    points: Sequence[Sequence[Coordinate]],
+    bbox: Tuple[int, int, int, int],
+) -> Tuple[List[Image.Image], List[List[Coordinate]]]:
+    """Crop ``images`` and translate ``points`` into the cropped frame."""
+
+    left, top, right, bottom = bbox
+    image_list = list(images)
+    points_list = [list(point_seq) for point_seq in points]
+
+    if len(image_list) != len(points_list):
+        raise ValueError("Number of image panels and point collections must match")
+
+    cropped_images = [image.crop(bbox) for image in image_list]
+    translated_points = [
+        [(x - left, y - top) for x, y in point_seq]
+        for point_seq in points_list
+    ]
+
+    return cropped_images, translated_points
+
+
 def draw_boxes(
     pil_img: Image.Image,
     points: Sequence[Coordinate],
@@ -311,6 +422,19 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     logging.debug("Transforming lesion coordinates to baseline frame")
     early_points_base = transform_points(early_points, matrix_early_to_base)
     late_points_base = transform_points(late_points, matrix_late_to_base)
+
+    logging.debug("Cropping images to their shared visual footprint")
+    bbox = common_content_bbox([baseline, early_warped, late_warped])
+    if bbox:
+        (baseline, early_warped, late_warped), (
+            baseline_points,
+            early_points_base,
+            late_points_base,
+        ) = crop_images(
+            [baseline, early_warped, late_warped],
+            [baseline_points, early_points_base, late_points_base],
+            bbox,
+        )
 
     logging.info("Creating annotated panels")
     annotated_baseline = draw_boxes(baseline, baseline_points, "Day 0 (baseline)", radius=args.radius)
