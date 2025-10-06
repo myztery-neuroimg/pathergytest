@@ -25,13 +25,14 @@ Features:
 ## Installation
 
 ```
-git clone https://github.com/myzteryneuro/pathergytest.git
+git clone https://github.com/myztery-neuroimg/pathergytest.git
 cd pathergytest
+# Copy your files as named below or change the filenames here
 pip install -r requirements.txt
 ```
 
 Requirements:
-- python > 3.11
+- python >= 3.12
 - opencv-python
 - numpy
 - Pillow
