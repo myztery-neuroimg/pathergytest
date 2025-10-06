@@ -218,6 +218,16 @@ def _refine_mask(
     return filtered
 
 
+def _component_areas(mask: np.ndarray) -> List[int]:
+    """Return the areas of connected components within ``mask``."""
+
+    if mask.dtype != np.uint8:
+        mask = mask.astype(np.uint8)
+    mask = np.where(mask > 0, 1, 0).astype(np.uint8)
+    num_labels, _, stats, _ = cv2.connectedComponentsWithStats(mask)
+    return [int(stats[idx, cv2.CC_STAT_AREA]) for idx in range(1, num_labels)]
+
+
 def common_content_bbox(
     images: Sequence[Image.Image],
     *,
@@ -235,16 +245,28 @@ def common_content_bbox(
     if not images:
         return None
 
+    logger = logging.getLogger(__name__)
+
     refined_masks = []
-    for image in images:
+    for idx, image in enumerate(images, start=1):
         raw_mask = _content_mask(image, threshold=threshold)
-        refined_masks.append(
-            _refine_mask(
-                raw_mask,
-                kernel_size=kernel_size,
-                min_component_area=min_component_area,
-            )
+        refined = _refine_mask(
+            raw_mask,
+            kernel_size=kernel_size,
+            min_component_area=min_component_area,
         )
+        refined_masks.append(refined)
+
+        component_areas = _component_areas(refined)
+        if component_areas:
+            logger.debug(
+                "Content mask %d retains %d component(s); minimum area=%d px",
+                idx,
+                len(component_areas),
+                min(component_areas),
+            )
+        else:
+            logger.debug("Content mask %d retains no components", idx)
 
     intersection = refined_masks[0]
     for mask in refined_masks[1:]:
@@ -255,6 +277,18 @@ def common_content_bbox(
         kernel_size=kernel_size,
         min_component_area=min_component_area,
     )
+
+    shared_component_areas = _component_areas(intersection)
+    if shared_component_areas:
+        logger.info(
+            "Shared visual-footprint retains %d component(s); minimum shared component area=%d px",
+            len(shared_component_areas),
+            min(shared_component_areas),
+        )
+    else:
+        logger.info(
+            "Shared visual-footprint retains no components after refinement"
+        )
 
     coords = cv2.findNonZero(intersection)
     if coords is None:
@@ -469,11 +503,17 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     early_warped = warp_to_base(early, matrix_early_to_base, (base_width, base_height))
     late_warped = warp_to_base(late, matrix_late_to_base, (base_width, base_height))
 
-    logging.debug("Transforming lesion coordinates to baseline frame")
+    logging.info("Transforming lesion coordinates to baseline frame")
     early_points_base = transform_points(early_points, matrix_early_to_base)
     late_points_base = transform_points(late_points, matrix_late_to_base)
 
-    logging.debug("Cropping images to their shared visual footprint")
+    logging.info("Cropping images to their shared visual footprint")
+    logging.info(
+        "Shared content detection params: threshold=%d, kernel_size=%d, min_component_area=%d",
+        args.content_threshold,
+        args.content_kernel_size,
+        args.content_min_component_area,
+    )
     bbox = common_content_bbox(
         [baseline, early_warped, late_warped],
         threshold=args.content_threshold,
@@ -524,7 +564,7 @@ def run_pipeline(args: argparse.Namespace) -> Path:
         for idx, (orig_w, orig_h) in enumerate(original_sizes, start=1):
             original_area = orig_w * orig_h
             retained_pct = (bbox_area / original_area * 100) if original_area else 0.0
-            logging.debug(
+            logging.info(
                 "Panel %d retains %.2f%% of original area after crop", idx, retained_pct
             )
         panels = [panel.crop(bbox) for panel in panels]
