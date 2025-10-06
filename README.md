@@ -1,7 +1,9 @@
 # Pathergy Reaction Analysis Toolkit
 
 A lightweight, reproducible pipeline for analyzing pathergy test reactions from clinical photographs.
+
 This tool aligns serial images, detects papular responses, and generates overlays and longitudinal composites for visual interpretation.
+
 This would be based on the following test https://behcet-zentrum.de/fuer-patienten/ 
 
 ---
@@ -29,6 +31,7 @@ pip install -r requirements.txt
 ```
 
 Requirements:
+- python > 3.11
 - opencv-python
 - numpy
 - Pillow
@@ -40,7 +43,7 @@ Requirements:
 1. Prepare your images:
    - day0_0h.png   (baseline at point of injection at 2 sites)
    - day1_24h.png         (24 h)
-   - day2_48h.png        (48g)
+   - day2_48h.png         (48 h)
 
 2. Run the pipeline:
    python main.py
@@ -59,7 +62,7 @@ Each overlay marks the same papule pair aligned to the Day-1 contour, showing th
 
 Detection:
 - Early: HSV-based red hue segmentation.
-- Late: CLAHE-enhanced gray thresholding for brown macules.
+- Late: CLAHE-enhanced gray thresholding for brown macules (if needed).
 
 Registration:
 - SIFT feature matching.
