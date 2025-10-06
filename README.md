@@ -47,15 +47,26 @@ Requirements:
    - day2_48h.png         (48 h)
 
 2. Run the pipeline:
-   python main.py
+
+   ```bash
+   python main.py \
+       --baseline day1_0h.png \
+       --early day1_24h.png \
+       --late day2_48h.png \
+       --output-dir outputs \
+       --log-level INFO
+   ```
+
+   Optional flags:
+
+   - `--radius`: adjust the lesion bounding box size (pixels).
+   - `--padding`: control spacing between montage panels.
+   - `--skip-dark-detection`: reuse early detections when late images lack contrast.
 
 3. Outputs:
-   - out_day0_baseline.jpg
-   - out_day0_aligned_24h.jpg
-   - out_day0_aligned_48h.jpg
-   - pathergy_timeline_composite.jpg
+   - `outputs/pathergy_timeline_composite.jpg`
 
-Each overlay marks the same papule pair aligned to the Day-1 contour, showing their evolution over time.
+Each overlay marks the same papule pair aligned to the Day-1 contour, showing their evolution over time. Logging provides traceability for each processing stage.
 
 ---
 
