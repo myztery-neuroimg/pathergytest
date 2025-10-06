@@ -382,6 +382,33 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Horizontal padding between panels in pixels (default: 20)",
     )
     parser.add_argument(
+        "--content-threshold",
+        type=int,
+        default=5,
+        help=(
+            "Pixel intensity threshold for shared visual-footprint detection "
+            "(default: 5)"
+        ),
+    )
+    parser.add_argument(
+        "--content-kernel-size",
+        type=int,
+        default=7,
+        help=(
+            "Morphological kernel size for shared visual-footprint detection "
+            "(default: 7)"
+        ),
+    )
+    parser.add_argument(
+        "--content-min-component-area",
+        type=int,
+        default=1000,
+        help=(
+            "Minimum connected component area kept during shared visual-"
+            "footprint detection (default: 1000)"
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -447,7 +474,12 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     late_points_base = transform_points(late_points, matrix_late_to_base)
 
     logging.debug("Cropping images to their shared visual footprint")
-    bbox = common_content_bbox([baseline, early_warped, late_warped])
+    bbox = common_content_bbox(
+        [baseline, early_warped, late_warped],
+        threshold=args.content_threshold,
+        kernel_size=args.content_kernel_size,
+        min_component_area=args.content_min_component_area,
+    )
     if bbox:
         (baseline, early_warped, late_warped), (
             baseline_points,
