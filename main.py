@@ -158,6 +158,29 @@ def warp_to_base(src_pil: Image.Image, matrix: np.ndarray, size: Tuple[int, int]
     return Image.fromarray(cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
 
 
+def common_content_bbox(panels: Sequence[Image.Image]) -> Tuple[int, int, int, int] | None:
+    """Compute a bounding box that contains shared non-empty content across ``panels``."""
+
+    if not panels:
+        return None
+
+    masks = []
+    for panel in panels:
+        gray = np.array(panel.convert("L"))
+        mask = gray > 0
+        if not np.any(mask):
+            return None
+        masks.append(mask)
+
+    combined = np.logical_and.reduce(masks)
+    if not np.any(combined):
+        return None
+
+    ys, xs = np.nonzero(combined)
+    top, bottom = ys.min(), ys.max()
+    left, right = xs.min(), xs.max()
+    # Pillow crop uses half-open coordinates, so include the final pixel by +1.
+    return int(left), int(top), int(right) + 1, int(bottom) + 1
 def _content_mask(pil_img: Image.Image, *, threshold: int = 5) -> np.ndarray:
     """Return a boolean mask of pixels that contain visual content."""
 
@@ -480,12 +503,12 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     early_warped = warp_to_base(early, matrix_early_to_base, (base_width, base_height))
     late_warped = warp_to_base(late, matrix_late_to_base, (base_width, base_height))
 
-    logging.debug("Transforming lesion coordinates to baseline frame")
+    logging.info("Transforming lesion coordinates to baseline frame")
     early_points_base = transform_points(early_points, matrix_early_to_base)
     late_points_base = transform_points(late_points, matrix_late_to_base)
 
-    logging.debug("Cropping images to their shared visual footprint")
-    logging.debug(
+    logging.info("Cropping images to their shared visual footprint")
+    logging.info(
         "Shared content detection params: threshold=%d, kernel_size=%d, min_component_area=%d",
         args.content_threshold,
         args.content_kernel_size,
@@ -517,9 +540,38 @@ def run_pipeline(args: argparse.Namespace) -> Path:
         late_warped, late_points_base, "Day 2 (~48h)", radius=args.radius
     )
 
+    panels = [annotated_baseline, annotated_early, annotated_late]
+    original_sizes = [panel.size for panel in panels]
+    for idx, (width, height) in enumerate(original_sizes, start=1):
+        logging.debug("Panel %d pre-crop size: %d x %d", idx, width, height)
+
+    bbox = common_content_bbox(panels)
+    if bbox is None:
+        logging.warning("No shared content bounding box found; skipping crop")
+    else:
+        left, top, right, bottom = bbox
+        bbox_width = right - left
+        bbox_height = bottom - top
+        bbox_area = bbox_width * bbox_height
+        logging.info(
+            "Shared content bbox: left=%d, top=%d, right=%d, bottom=%d (area=%d)",
+            left,
+            top,
+            right,
+            bottom,
+            bbox_area,
+        )
+        for idx, (orig_w, orig_h) in enumerate(original_sizes, start=1):
+            original_area = orig_w * orig_h
+            retained_pct = (bbox_area / original_area * 100) if original_area else 0.0
+            logging.info(
+                "Panel %d retains %.2f%% of original area after crop", idx, retained_pct
+            )
+        panels = [panel.crop(bbox) for panel in panels]
+
     logging.info("Building montage")
     montage = build_montage(
-        [annotated_baseline, annotated_early, annotated_late],
+        panels,
         padding=args.padding,
         caption="Pathergy Test Timeline (Baseline-aligned)",
     )
