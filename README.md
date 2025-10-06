@@ -22,9 +22,11 @@ Features:
 
 ## Installation
 
+```
 git clone https://github.com/myzteryneuro/pathergytest.git
 cd pathergytest
 pip install -r requirements.txt
+```
 
 Requirements:
 - opencv-python
