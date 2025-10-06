@@ -2,6 +2,7 @@
 
 A lightweight, reproducible pipeline for analyzing pathergy test reactions from clinical photographs.
 This tool aligns serial images, detects papular responses, and generates overlays and longitudinal composites for visual interpretation.
+This would be based on the following test https://behcet-zentrum.de/fuer-patienten/ 
 
 ---
 
@@ -12,7 +13,7 @@ Provide an automated way to verify, document, and visualize a positive pathergy 
 
 Features:
 - Automatic detection of papular lesions (red → brown macules).
-- Alignment of all frames to a Day-1 baseline forearm contour using SIFT + RANSAC.
+- Alignment of all frames to a Day-0 baseline forearm contour using SIFT + RANSAC.
 - Generation of:
   - Individual annotated overlays for each timepoint.
   - A composite timeline panel showing morphological progression.
@@ -35,17 +36,17 @@ Requirements:
 ## Usage
 
 1. Prepare your images:
-   - day1_0h.png   (baseline ≈4 h)
-   - day2_24h.png         (12–24 h)
-   - day5_full.png        (~5 days)
+   - day0_0h.png   (baseline at point of injection at 2 sites)
+   - day1_24h.png         (24 h)
+   - day2_48h.png        (48g)
 
 2. Run the pipeline:
-   python pathergy_align.py
+   python main.py
 
 3. Outputs:
-   - out_day1_baseline.jpg
-   - out_day1_aligned_24h.jpg
-   - out_day1_aligned_5d.jpg
+   - out_day0_baseline.jpg
+   - out_day0_aligned_24h.jpg
+   - out_day0_aligned_48h.jpg
    - pathergy_timeline_composite.jpg
 
 Each overlay marks the same papule pair aligned to the Day-1 contour, showing their evolution over time.
@@ -73,9 +74,9 @@ Visualization:
 
 Timepoint | Morphology | Clinical Meaning
 ---------- | ----------- | ----------------
-Day 1 (~4 h) | Erythematous punctures | Baseline inflammation
-Day 2 (~24 h) | Papular / pustular | Meets positivity threshold
-Day 5 (+2 h) | Brown-red fading papules | Persistent reaction
+Day 0 (~) | Baseline  | Only puncture site
+Day 1 (+24 h) | Papular / pustular | Autoimmune response
+Day 2 (+48 h) | Papular / pustular | Meets positivity threshold
 
 ---
 
