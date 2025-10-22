@@ -38,6 +38,121 @@ def load_image(path: Path) -> Image.Image:
         raise OSError(f"Unable to open image '{path}': {exc}") from exc
 
 
+def illumination_correction(pil_img: Image.Image, clip_limit: float = 2.0) -> Image.Image:
+    """Apply illumination correction using LAB color space and CLAHE on L channel."""
+
+    logging.debug("Applying illumination correction with clip_limit=%.1f", clip_limit)
+    bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+    l_channel_enhanced = clahe.apply(l_channel)
+
+    lab_enhanced = cv2.merge([l_channel_enhanced, a_channel, b_channel])
+    bgr_enhanced = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
+    return Image.fromarray(cv2.cvtColor(bgr_enhanced, cv2.COLOR_BGR2RGB))
+
+
+def bilateral_filter_preprocess(
+    pil_img: Image.Image, d: int = 9, sigma_color: int = 75, sigma_space: int = 75
+) -> Image.Image:
+    """Apply bilateral filtering for edge-preserving noise reduction."""
+
+    logging.debug(
+        "Applying bilateral filter: d=%d, sigma_color=%d, sigma_space=%d",
+        d, sigma_color, sigma_space
+    )
+    bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    filtered = cv2.bilateralFilter(bgr, d, sigma_color, sigma_space)
+    return Image.fromarray(cv2.cvtColor(filtered, cv2.COLOR_BGR2RGB))
+
+
+def normalize_colors(pil_img: Image.Image) -> Image.Image:
+    """Normalize color channels to improve consistency across images."""
+
+    logging.debug("Normalizing color channels")
+    bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+
+    # Normalize each channel to 0-255 range
+    l_normalized = cv2.normalize(l_channel, None, 0, 255, cv2.NORM_MINMAX)
+
+    lab_normalized = cv2.merge([l_normalized, a_channel, b_channel])
+    bgr_normalized = cv2.cvtColor(lab_normalized, cv2.COLOR_LAB2BGR)
+    return Image.fromarray(cv2.cvtColor(bgr_normalized, cv2.COLOR_BGR2RGB))
+
+
+def unsharp_mask(pil_img: Image.Image, kernel_size: int = 5, strength: float = 1.5) -> Image.Image:
+    """Apply unsharp masking for edge enhancement."""
+
+    logging.debug("Applying unsharp mask: kernel_size=%d, strength=%.1f", kernel_size, strength)
+    bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+    # Create Gaussian blurred version
+    gaussian = cv2.GaussianBlur(bgr, (kernel_size, kernel_size), 0)
+
+    # Calculate unsharp mask
+    unsharp = cv2.addWeighted(bgr, 1.0 + strength, gaussian, -strength, 0)
+
+    return Image.fromarray(cv2.cvtColor(unsharp, cv2.COLOR_BGR2RGB))
+
+
+def preprocess_image(
+    pil_img: Image.Image,
+    *,
+    apply_illumination: bool = True,
+    apply_bilateral: bool = True,
+    apply_normalize: bool = True,
+    apply_unsharp: bool = False,
+    illumination_clip: float = 2.0,
+    bilateral_d: int = 9,
+    bilateral_sigma_color: int = 75,
+    bilateral_sigma_space: int = 75,
+    unsharp_kernel: int = 5,
+    unsharp_strength: float = 1.5,
+) -> Image.Image:
+    """Apply a comprehensive pre-processing pipeline to enhance image quality.
+
+    Args:
+        pil_img: Input PIL Image
+        apply_illumination: Apply illumination correction
+        apply_bilateral: Apply bilateral filtering
+        apply_normalize: Apply color normalization
+        apply_unsharp: Apply unsharp masking
+        illumination_clip: CLAHE clip limit for illumination correction
+        bilateral_d: Diameter of pixel neighborhood for bilateral filter
+        bilateral_sigma_color: Filter sigma in color space
+        bilateral_sigma_space: Filter sigma in coordinate space
+        unsharp_kernel: Kernel size for unsharp mask
+        unsharp_strength: Strength of unsharp mask effect
+
+    Returns:
+        Preprocessed PIL Image
+    """
+
+    logging.debug("Starting image pre-processing pipeline")
+    processed = pil_img
+
+    if apply_illumination:
+        processed = illumination_correction(processed, clip_limit=illumination_clip)
+
+    if apply_bilateral:
+        processed = bilateral_filter_preprocess(
+            processed, d=bilateral_d, sigma_color=bilateral_sigma_color, sigma_space=bilateral_sigma_space
+        )
+
+    if apply_normalize:
+        processed = normalize_colors(processed)
+
+    if apply_unsharp:
+        processed = unsharp_mask(processed, kernel_size=unsharp_kernel, strength=unsharp_strength)
+
+    logging.debug("Pre-processing pipeline complete")
+    return processed
+
+
 def affine_register(src_pil: Image.Image, dst_pil: Image.Image) -> np.ndarray:
     """Estimate an affine transform aligning ``src`` → ``dst`` using SIFT + RANSAC."""
 
@@ -138,6 +253,212 @@ def detect_papules_dark(
         (x0 + int(blob_a[0]), y0 + int(blob_a[1])),
         (x0 + int(blob_b[0]), y0 + int(blob_b[1])),
     ]
+
+
+def visualize_hsv_mask(pil_img: Image.Image, min_area: int = 30) -> Image.Image:
+    """Create a visualization overlay showing HSV-based red detection mask."""
+
+    logging.debug("Creating HSV mask visualization")
+    bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+
+    # Create red mask (same as detect_papules_red)
+    mask = cv2.inRange(hsv, (0, 60, 60), (12, 255, 255)) | cv2.inRange(
+        hsv, (170, 60, 60), (180, 255, 255)
+    )
+    mask = cv2.medianBlur(mask, 3)
+
+    # Create colored overlay: red mask on semi-transparent original
+    overlay = bgr.copy()
+    overlay[mask > 0] = [0, 0, 255]  # Red in BGR
+
+    # Blend with original image
+    result = cv2.addWeighted(bgr, 0.7, overlay, 0.3, 0)
+
+    return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+
+
+def visualize_contours(pil_img: Image.Image, points: Sequence[Coordinate]) -> Image.Image:
+    """Create a visualization showing detected contours and their properties."""
+
+    logging.debug("Creating contour visualization for %d points", len(points))
+    bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+
+    mask = cv2.inRange(hsv, (0, 60, 60), (12, 255, 255)) | cv2.inRange(
+        hsv, (170, 60, 60), (180, 255, 255)
+    )
+    mask = cv2.medianBlur(mask, 3)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Draw all contours in green
+    result = bgr.copy()
+    cv2.drawContours(result, contours, -1, (0, 255, 0), 2)
+
+    # Draw circles at detected points
+    for x, y in points:
+        cv2.circle(result, (x, y), 10, (255, 0, 255), 2)  # Magenta circles
+        cv2.circle(result, (x, y), 2, (255, 0, 255), -1)   # Center dot
+
+    return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+
+
+def visualize_dark_detection(
+    pil_img: Image.Image, points: Sequence[Coordinate], scan_region: Sequence[int] | None = None
+) -> Image.Image:
+    """Create a visualization showing dark papule detection process."""
+
+    logging.debug("Creating dark detection visualization")
+    gray = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2GRAY)
+    height, width = gray.shape
+    bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+    if not scan_region:
+        x0, y0 = int(width * 0.25), int(height * 0.45)
+        x1, y1 = int(width * 0.80), int(height * 0.85)
+    else:
+        x0, y0, x1, y1 = scan_region
+
+    # Draw scan region rectangle
+    result = bgr.copy()
+    cv2.rectangle(result, (x0, y0), (x1, y1), (255, 255, 0), 2)  # Yellow rectangle
+
+    # Apply CLAHE and thresholding
+    crop = gray[y0:y1, x0:x1]
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(crop)
+    threshold_value = int(np.mean(enhanced) - 10)
+    _, threshold = cv2.threshold(enhanced, threshold_value, 255, cv2.THRESH_BINARY_INV)
+    threshold = cv2.medianBlur(threshold, 3)
+
+    # Create colored threshold overlay
+    threshold_colored = cv2.cvtColor(threshold, cv2.COLOR_GRAY2BGR)
+    threshold_colored[threshold > 0] = [0, 255, 255]  # Cyan for detected regions
+
+    # Blend threshold with result in the scan region
+    result[y0:y1, x0:x1] = cv2.addWeighted(
+        result[y0:y1, x0:x1], 0.7, threshold_colored, 0.3, 0
+    )
+
+    # Draw detected points
+    for x, y in points:
+        cv2.circle(result, (x, y), 10, (255, 0, 255), 2)  # Magenta circles
+        cv2.circle(result, (x, y), 2, (255, 0, 255), -1)
+
+    return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+
+
+def visualize_sift_features(
+    src_pil: Image.Image, dst_pil: Image.Image, num_features: int = 30
+) -> Tuple[Image.Image, Image.Image]:
+    """Create visualizations showing SIFT keypoints on both images."""
+
+    logging.debug("Creating SIFT feature visualization")
+    src = cv2.cvtColor(np.array(src_pil), cv2.COLOR_RGB2GRAY)
+    dst = cv2.cvtColor(np.array(dst_pil), cv2.COLOR_RGB2GRAY)
+
+    sift = cv2.SIFT_create()
+    keypoints_src, _ = sift.detectAndCompute(src, None)
+    keypoints_dst, _ = sift.detectAndCompute(dst, None)
+
+    # Draw keypoints (limit to top N by response)
+    keypoints_src_sorted = sorted(keypoints_src, key=lambda k: k.response, reverse=True)[:num_features]
+    keypoints_dst_sorted = sorted(keypoints_dst, key=lambda k: k.response, reverse=True)[:num_features]
+
+    src_bgr = cv2.cvtColor(src, cv2.COLOR_GRAY2BGR)
+    dst_bgr = cv2.cvtColor(dst, cv2.COLOR_GRAY2BGR)
+
+    src_with_kp = cv2.drawKeypoints(
+        src_bgr, keypoints_src_sorted, None,
+        flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS,
+        color=(0, 255, 0)
+    )
+    dst_with_kp = cv2.drawKeypoints(
+        dst_bgr, keypoints_dst_sorted, None,
+        flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS,
+        color=(0, 255, 0)
+    )
+
+    return (
+        Image.fromarray(cv2.cvtColor(src_with_kp, cv2.COLOR_BGR2RGB)),
+        Image.fromarray(cv2.cvtColor(dst_with_kp, cv2.COLOR_BGR2RGB))
+    )
+
+
+def visualize_morphological_operations(
+    pil_img: Image.Image, threshold: int = 5, kernel_size: int = 7
+) -> Image.Image:
+    """Create visualization showing morphological closing and opening operations."""
+
+    logging.debug("Creating morphological operations visualization")
+    mask = _content_mask(pil_img, threshold=threshold)
+    mask_uint8 = mask.astype(np.uint8) * 255
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+
+    # Apply closing
+    closed = cv2.morphologyEx(mask_uint8, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    # Apply opening
+    opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    # Create colored visualization
+    # Original mask: Blue, Closed: Green, Final (opened): Red
+    bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    result = bgr.copy()
+
+    # Create colored overlays
+    overlay = np.zeros_like(bgr)
+    overlay[mask_uint8 > 0] = [255, 0, 0]  # Original in blue
+    overlay[closed > 0] = [0, 255, 0]      # Closed in green
+    overlay[opened > 0] = [0, 0, 255]      # Final in red
+
+    result = cv2.addWeighted(result, 0.7, overlay, 0.3, 0)
+
+    return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+
+
+def create_diagnostic_panel(
+    original: Image.Image,
+    preprocessed: Image.Image,
+    hsv_overlay: Image.Image,
+    contour_overlay: Image.Image,
+    *,
+    padding: int = 10,
+) -> Image.Image:
+    """Create a 2x2 diagnostic panel showing preprocessing and detection stages."""
+
+    logging.debug("Creating diagnostic panel")
+
+    # Resize all images to same size
+    target_width = min(original.size[0], 800)
+    target_height = min(original.size[1], 600)
+
+    images = [original, preprocessed, hsv_overlay, contour_overlay]
+    resized = []
+    for img in images:
+        resized.append(img.resize((target_width, target_height), Image.Resampling.LANCZOS))
+
+    # Create 2x2 grid
+    grid_width = 2 * target_width + padding
+    grid_height = 2 * target_height + padding
+    panel = Image.new("RGB", (grid_width, grid_height), (0, 0, 0))
+
+    # Add labels
+    labels = ["Original", "Preprocessed", "HSV Mask", "Contours"]
+    for idx, (img, label) in enumerate(zip(resized, labels)):
+        x = (idx % 2) * (target_width + padding)
+        y = (idx // 2) * (target_height + padding)
+
+        # Add label to image
+        labeled = img.copy()
+        draw = ImageDraw.Draw(labeled)
+        draw.text((10, 10), label, fill=(255, 255, 255))
+
+        panel.paste(labeled, (x, y))
+
+    return panel
 
 
 def transform_points(points: Iterable[Coordinate], matrix: np.ndarray) -> List[Coordinate]:
@@ -453,6 +774,50 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         action="store_true",
         help="Disable the late-stage dark lesion detector and reuse early detections.",
     )
+    parser.add_argument(
+        "--enable-preprocessing",
+        action="store_true",
+        help="Enable comprehensive pre-processing pipeline (illumination correction, bilateral filtering, color normalization).",
+    )
+    parser.add_argument(
+        "--enable-unsharp",
+        action="store_true",
+        help="Enable unsharp masking for edge enhancement (requires --enable-preprocessing).",
+    )
+    parser.add_argument(
+        "--generate-diagnostic-panels",
+        action="store_true",
+        help="Generate diagnostic visualization panels showing morphological features and processing steps.",
+    )
+    parser.add_argument(
+        "--save-morphological-overlays",
+        action="store_true",
+        help="Save individual morphological overlay images (HSV masks, contours, SIFT features).",
+    )
+    parser.add_argument(
+        "--illumination-clip",
+        type=float,
+        default=2.0,
+        help="CLAHE clip limit for illumination correction (default: 2.0).",
+    )
+    parser.add_argument(
+        "--bilateral-d",
+        type=int,
+        default=9,
+        help="Diameter of pixel neighborhood for bilateral filter (default: 9).",
+    )
+    parser.add_argument(
+        "--bilateral-sigma-color",
+        type=int,
+        default=75,
+        help="Filter sigma in color space for bilateral filter (default: 75).",
+    )
+    parser.add_argument(
+        "--bilateral-sigma-space",
+        type=int,
+        default=75,
+        help="Filter sigma in coordinate space for bilateral filter (default: 75).",
+    )
     return parser.parse_args(argv)
 
 
@@ -472,9 +837,50 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     ensure_inputs_exist([args.baseline, args.early, args.late])
 
     logging.info("Loading images")
-    baseline = load_image(args.baseline)
-    early = load_image(args.early)
-    late = load_image(args.late)
+    baseline_original = load_image(args.baseline)
+    early_original = load_image(args.early)
+    late_original = load_image(args.late)
+
+    # Apply pre-processing if enabled
+    if args.enable_preprocessing:
+        logging.info("Applying pre-processing pipeline")
+        baseline = preprocess_image(
+            baseline_original,
+            apply_illumination=True,
+            apply_bilateral=True,
+            apply_normalize=True,
+            apply_unsharp=args.enable_unsharp,
+            illumination_clip=args.illumination_clip,
+            bilateral_d=args.bilateral_d,
+            bilateral_sigma_color=args.bilateral_sigma_color,
+            bilateral_sigma_space=args.bilateral_sigma_space,
+        )
+        early = preprocess_image(
+            early_original,
+            apply_illumination=True,
+            apply_bilateral=True,
+            apply_normalize=True,
+            apply_unsharp=args.enable_unsharp,
+            illumination_clip=args.illumination_clip,
+            bilateral_d=args.bilateral_d,
+            bilateral_sigma_color=args.bilateral_sigma_color,
+            bilateral_sigma_space=args.bilateral_sigma_space,
+        )
+        late = preprocess_image(
+            late_original,
+            apply_illumination=True,
+            apply_bilateral=True,
+            apply_normalize=True,
+            apply_unsharp=args.enable_unsharp,
+            illumination_clip=args.illumination_clip,
+            bilateral_d=args.bilateral_d,
+            bilateral_sigma_color=args.bilateral_sigma_color,
+            bilateral_sigma_space=args.bilateral_sigma_space,
+        )
+    else:
+        baseline = baseline_original
+        early = early_original
+        late = late_original
 
     base_width, base_height = baseline.size
     logging.debug("Baseline image size: %s x %s", base_width, base_height)
@@ -582,6 +988,79 @@ def run_pipeline(args: argparse.Namespace) -> Path:
 
     logging.info("Saving montage to %s", output_path)
     montage.save(output_path, quality=95)
+
+    # Generate morphological overlays if requested
+    if args.save_morphological_overlays or args.generate_diagnostic_panels:
+        logging.info("Generating morphological visualizations")
+
+        # Generate HSV mask overlays
+        baseline_hsv = visualize_hsv_mask(baseline)
+        early_hsv = visualize_hsv_mask(early)
+
+        # Generate contour overlays
+        baseline_contours = visualize_contours(baseline, baseline_points)
+        early_contours = visualize_contours(early, early_points)
+
+        # Generate dark detection overlay
+        late_dark = visualize_dark_detection(late, late_points)
+
+        # Generate SIFT visualizations
+        early_sift, baseline_sift_early = visualize_sift_features(early_original, baseline_original)
+        late_sift, baseline_sift_late = visualize_sift_features(late_original, baseline_original)
+
+        if args.save_morphological_overlays:
+            logging.info("Saving individual morphological overlays")
+            baseline_hsv.save(output_dir / "baseline_hsv_mask.jpg", quality=95)
+            early_hsv.save(output_dir / "early_hsv_mask.jpg", quality=95)
+            baseline_contours.save(output_dir / "baseline_contours.jpg", quality=95)
+            early_contours.save(output_dir / "early_contours.jpg", quality=95)
+            late_dark.save(output_dir / "late_dark_detection.jpg", quality=95)
+            early_sift.save(output_dir / "early_sift_features.jpg", quality=95)
+            baseline_sift_early.save(output_dir / "baseline_sift_features_early.jpg", quality=95)
+            late_sift.save(output_dir / "late_sift_features.jpg", quality=95)
+            baseline_sift_late.save(output_dir / "baseline_sift_features_late.jpg", quality=95)
+            logging.info("Morphological overlays saved to %s", output_dir)
+
+    # Generate diagnostic panels if requested
+    if args.generate_diagnostic_panels:
+        logging.info("Generating diagnostic panels")
+
+        # Baseline diagnostic panel
+        baseline_panel = create_diagnostic_panel(
+            baseline_original,
+            baseline,
+            baseline_hsv,
+            baseline_contours,
+            padding=10,
+        )
+        baseline_panel_path = output_dir / "baseline_diagnostic_panel.jpg"
+        baseline_panel.save(baseline_panel_path, quality=95)
+        logging.info("Baseline diagnostic panel saved to %s", baseline_panel_path)
+
+        # Early diagnostic panel
+        early_panel = create_diagnostic_panel(
+            early_original,
+            early,
+            early_hsv,
+            early_contours,
+            padding=10,
+        )
+        early_panel_path = output_dir / "early_diagnostic_panel.jpg"
+        early_panel.save(early_panel_path, quality=95)
+        logging.info("Early diagnostic panel saved to %s", early_panel_path)
+
+        # Late diagnostic panel (with dark detection instead of contours)
+        late_panel = create_diagnostic_panel(
+            late_original,
+            late,
+            visualize_hsv_mask(late),
+            late_dark,
+            padding=10,
+        )
+        late_panel_path = output_dir / "late_diagnostic_panel.jpg"
+        late_panel.save(late_panel_path, quality=95)
+        logging.info("Late diagnostic panel saved to %s", late_panel_path)
+
     return output_path
 
 

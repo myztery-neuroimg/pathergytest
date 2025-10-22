@@ -15,10 +15,17 @@ Provide an automated way to verify, document, and visualize a positive pathergy 
 
 Features:
 - Automatic detection of papular lesions (red → brown macules).
+- Comprehensive pre-processing pipeline for improved image quality:
+  - Illumination correction using LAB color space and CLAHE.
+  - Edge-preserving noise reduction via bilateral filtering.
+  - Color normalization for consistent analysis.
+  - Optional unsharp masking for edge enhancement.
 - Alignment of all frames to a Day-0 baseline forearm contour using SIFT + RANSAC.
 - Generation of:
   - Individual annotated overlays for each timepoint.
   - A composite timeline panel showing morphological progression.
+  - Morphological mapping visualizations (HSV masks, contours, SIFT features).
+  - Diagnostic panels showing all processing stages.
 
 ---
 
@@ -48,6 +55,7 @@ Requirements:
 
 2. Run the pipeline:
 
+   **Basic usage:**
    ```bash
    python main.py \
        --baseline day1_0h.png \
@@ -57,14 +65,50 @@ Requirements:
        --log-level INFO
    ```
 
-   Optional flags:
+   **With pre-processing and morphological visualizations:**
+   ```bash
+   python main.py \
+       --baseline day1_0h.png \
+       --early day1_24h.png \
+       --late day2_48h.png \
+       --output-dir outputs \
+       --enable-preprocessing \
+       --generate-diagnostic-panels \
+       --save-morphological-overlays \
+       --log-level DEBUG
+   ```
 
-   - `--radius`: adjust the lesion bounding box size (pixels).
-   - `--padding`: control spacing between montage panels.
-   - `--skip-dark-detection`: reuse early detections when late images lack contrast.
+   **Pre-processing options:**
+   - `--enable-preprocessing`: Enable comprehensive pre-processing pipeline (illumination correction, bilateral filtering, color normalization).
+   - `--enable-unsharp`: Enable unsharp masking for edge enhancement (requires `--enable-preprocessing`).
+   - `--illumination-clip FLOAT`: CLAHE clip limit for illumination correction (default: 2.0).
+   - `--bilateral-d INT`: Diameter of pixel neighborhood for bilateral filter (default: 9).
+   - `--bilateral-sigma-color INT`: Filter sigma in color space (default: 75).
+   - `--bilateral-sigma-space INT`: Filter sigma in coordinate space (default: 75).
+
+   **Visualization options:**
+   - `--generate-diagnostic-panels`: Generate diagnostic visualization panels showing preprocessing and detection stages.
+   - `--save-morphological-overlays`: Save individual morphological overlay images (HSV masks, contours, SIFT features).
+
+   **Other optional flags:**
+   - `--radius`: Adjust the lesion bounding box size (pixels, default: 22).
+   - `--padding`: Control spacing between montage panels (pixels, default: 20).
+   - `--skip-dark-detection`: Reuse early detections when late images lack contrast.
+   - `--content-threshold INT`: Pixel intensity threshold for shared visual-footprint detection (default: 5).
+   - `--content-kernel-size INT`: Morphological kernel size for shared visual-footprint detection (default: 7).
+   - `--content-min-component-area INT`: Minimum connected component area kept during detection (default: 1000).
 
 3. Outputs:
-   - `outputs/pathergy_timeline_composite.jpg`
+   - `outputs/pathergy_timeline_composite.jpg` - Main composite timeline
+   - `outputs/baseline_diagnostic_panel.jpg` - Baseline diagnostic panel (if `--generate-diagnostic-panels` is used)
+   - `outputs/early_diagnostic_panel.jpg` - Early diagnostic panel (if `--generate-diagnostic-panels` is used)
+   - `outputs/late_diagnostic_panel.jpg` - Late diagnostic panel (if `--generate-diagnostic-panels` is used)
+   - `outputs/baseline_hsv_mask.jpg` - Baseline HSV mask overlay (if `--save-morphological-overlays` is used)
+   - `outputs/early_hsv_mask.jpg` - Early HSV mask overlay (if `--save-morphological-overlays` is used)
+   - `outputs/baseline_contours.jpg` - Baseline contours visualization (if `--save-morphological-overlays` is used)
+   - `outputs/early_contours.jpg` - Early contours visualization (if `--save-morphological-overlays` is used)
+   - `outputs/late_dark_detection.jpg` - Late dark detection visualization (if `--save-morphological-overlays` is used)
+   - `outputs/*_sift_features.jpg` - SIFT feature visualizations (if `--save-morphological-overlays` is used)
 
 Each overlay marks the same papule pair aligned to the Day-1 contour, showing their evolution over time. Logging provides traceability for each processing stage.
 
@@ -72,18 +116,24 @@ Each overlay marks the same papule pair aligned to the Day-1 contour, showing th
 
 ## Methodology
 
+Pre-processing (optional):
+- **Illumination correction**: LAB color space conversion with CLAHE applied to L channel to normalize lighting conditions.
+- **Bilateral filtering**: Edge-preserving noise reduction that smooths while maintaining sharp boundaries.
+- **Color normalization**: Normalizes color channels to improve consistency across images taken under different lighting.
+- **Unsharp masking**: Edge enhancement technique to improve feature detection and alignment.
+
 Detection:
-- Early: HSV-based red hue segmentation.
-- Late: CLAHE-enhanced gray thresholding for brown macules (if needed).
+- **Early (Day 0-1)**: HSV-based red hue segmentation to detect inflammatory papules.
+- **Late (Day 2)**: CLAHE-enhanced gray thresholding with morphological operations for detecting brown macules with circularity and distance constraints.
 
 Registration:
-- SIFT feature matching.
-- Affine transformation via RANSAC.
+- **SIFT feature matching**: Scale-Invariant Feature Transform to detect distinctive keypoints.
+- **Affine transformation via RANSAC**: Robust estimation to align follow-up images to baseline frame.
 
 Visualization:
-- Uniform coordinate geometry.
-- Red bounding boxes (22 px radius).
-- Optional side-by-side montage output.
+- **Standard output**: Uniform coordinate geometry with red bounding boxes (22 px radius) and side-by-side montage.
+- **Morphological overlays**: HSV masks, contour visualizations, SIFT keypoint displays, and dark detection process visualization.
+- **Diagnostic panels**: 2×2 grids showing original, preprocessed, HSV mask, and contour/detection overlays for each timepoint.
 
 ---
 
