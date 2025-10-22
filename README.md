@@ -123,27 +123,30 @@ Each overlay marks the same papule pair aligned to the Day-1 contour, showing th
 
 The pipeline executes in this specific order to ensure accurate tracking:
 
-1. **Load and Pre-process** (optional illumination correction, bilateral filtering, color normalization)
-2. **Geomorphological Feature Identification**: Identify shared anatomical region (forearm) across ALL images BEFORE any detection or registration
-3. **Pre-crop to Shared Region**: Eliminate hands, elbows, and background from all images
-4. **Detect Puncture Sites**: Detect Day 0 puncture sites on the cropped baseline image only
-5. **Register and Warp**: Align cropped follow-up images to cropped baseline
-6. **Track Sites**: Use the same Day 0 coordinates across all registered images
+1. **Load Images**: Load Day 0, Day 1, and Day 2+ images
+2. **Pre-process** (optional): Apply illumination correction, bilateral filtering, color normalization to improve registration
+3. **Register**: Align follow-up images to baseline using SIFT + RANSAC on FULL images (maximum features for robust alignment)
+4. **Warp**: Transform follow-up images to baseline coordinate frame
+5. **Identify Shared Anatomical Region**: Find the shared forearm region across ALIGNED images
+6. **Crop to Shared Region**: Eliminate hands, elbows, and background from all aligned images
+7. **Detect Puncture Sites**: Detect Day 0 puncture sites on cropped baseline image only
+8. **Track Sites**: Use the same Day 0 coordinates across all cropped, aligned timepoints
 
-This order is critical because it:
-- Prevents confounding features (hands/elbows) from interfering with puncture site detection
-- Ensures puncture sites are never cropped out after detection
-- Maintains stable coordinate system throughout the pipeline
-- Focuses detection on the relevant forearm anatomy only
+This order is critical because:
+- **Registration before cropping**: Full images provide maximum SIFT features for robust alignment; handles rotation/translation/scale
+- **Preprocessing before registration**: Illumination correction helps SIFT matching work across different lighting conditions
+- **Shared region after alignment**: Only meaningful to find "shared" anatomy once images are aligned in same coordinate frame
+- **Detection on cropped images**: Eliminates confounding features (hands/elbows) and focuses on relevant forearm anatomy
+- **Stable coordinates**: All images in same coordinate space after warp+crop; Day 0 puncture coordinates apply directly
 
 ### Technical Details
 
 **Geomorphological Feature Identification:**
 - Uses morphological operations (closing/opening) with elliptical kernels to identify skin regions
 - Filters connected components by minimum area to remove noise
-- Computes intersection of content masks across all three timepoints
+- Computes intersection of content masks across all three ALIGNED timepoints
 - Finds bounding box containing the shared forearm region
-- This happens BEFORE detection or registration to establish the anatomical region of interest
+- This happens AFTER registration/warping but BEFORE detection to establish the clean anatomical region of interest
 
 **Pre-processing** (optional):
 - **Illumination correction**: LAB color space conversion with CLAHE applied to L channel to normalize lighting conditions
@@ -151,14 +154,17 @@ This order is critical because it:
 - **Color normalization**: Normalizes color channels to improve consistency across images taken under different lighting
 - **Unsharp masking**: Edge enhancement technique to improve feature detection and alignment
 
-**Puncture Site Detection and Tracking:**
-- **Day 0 (Baseline)**: HSV-based red hue segmentation to detect puncture sites on the PRE-CROPPED baseline image
-- **Day 1-5+ (Follow-up)**: The same anatomical locations are tracked across all registered images; no independent detection is performed
-- Tracks the evolution of the SAME puncture sites over time through geometric mapping via affine registration
-
 **Registration:**
-- **SIFT feature matching**: Scale-Invariant Feature Transform to detect distinctive keypoints on cropped images
-- **Affine transformation via RANSAC**: Robust estimation to align cropped follow-up images to cropped baseline frame
+- **SIFT feature matching**: Scale-Invariant Feature Transform to detect distinctive keypoints on FULL images for maximum features
+- **Affine transformation via RANSAC**: Robust estimation to align follow-up images to baseline frame
+- Handles rotation, translation, and scale differences between images
+- Uses preprocessed images if preprocessing is enabled (improves feature matching under varying lighting)
+
+**Puncture Site Detection and Tracking:**
+- **Day 0 (Baseline)**: HSV-based red hue segmentation to detect puncture sites on the ALIGNED AND CROPPED baseline image
+- **Day 1-5+ (Follow-up)**: The same anatomical locations are tracked across all cropped, aligned images; no independent detection is performed
+- Tracks the evolution of the SAME puncture sites over time
+- Coordinates remain stable because all images are in the same aligned+cropped coordinate space
 
 **Visualization:**
 - **Standard output**: Uniform coordinate geometry with red bounding boxes (22 px radius) and side-by-side montage

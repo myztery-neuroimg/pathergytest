@@ -888,17 +888,26 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     base_width, base_height = baseline.size
     logging.debug("Baseline image size: %s x %s", base_width, base_height)
 
-    logging.info("Identifying shared anatomical region across all images (pre-registration)")
+    logging.info("Registering follow-up images to baseline (using full images for maximum features)")
+    # Registration uses full/preprocessed images to maximize SIFT keypoints
+    matrix_early_to_base = affine_register(early, baseline)
+    matrix_late_to_base = affine_register(late, baseline)
+
+    logging.info("Warping follow-up images to baseline coordinate frame")
+    early_warped = warp_to_base(early, matrix_early_to_base, (base_width, base_height))
+    late_warped = warp_to_base(late, matrix_late_to_base, (base_width, base_height))
+
+    logging.info("Identifying shared anatomical region across all ALIGNED images")
     logging.info(
         "Shared content detection params: threshold=%d, kernel_size=%d, min_component_area=%d",
         args.content_threshold,
         args.content_kernel_size,
         args.content_min_component_area,
     )
-    # Find shared visual footprint BEFORE registration to identify forearm region
-    # This eliminates hands, elbows, and background before detection
+    # Find shared visual footprint AFTER registration on aligned images
+    # This identifies the forearm region and eliminates hands, elbows, background
     shared_bbox = common_content_bbox(
-        [baseline, early, late],
+        [baseline, early_warped, late_warped],
         threshold=args.content_threshold,
         kernel_size=args.content_kernel_size,
         min_component_area=args.content_min_component_area,
@@ -910,34 +919,27 @@ def run_pipeline(args: argparse.Namespace) -> Path:
             "Shared anatomical region found: left=%d, top=%d, right=%d, bottom=%d",
             left, top, right, bottom
         )
-        # Crop all images to shared region BEFORE detection and registration
-        baseline = baseline.crop(shared_bbox)
-        early = early.crop(shared_bbox)
-        late = late.crop(shared_bbox)
-        base_width, base_height = baseline.size
-        logging.info("Images cropped to shared forearm region: %d x %d", base_width, base_height)
+        # Crop all aligned images to shared forearm region
+        baseline_cropped = baseline.crop(shared_bbox)
+        early_warped_cropped = early_warped.crop(shared_bbox)
+        late_warped_cropped = late_warped.crop(shared_bbox)
+        logging.info("Images cropped to shared forearm region: %d x %d", baseline_cropped.size[0], baseline_cropped.size[1])
     else:
-        logging.warning("No shared anatomical region found; using full images")
+        logging.warning("No shared anatomical region found; using full aligned images")
         logging.warning("This may include hands, elbows, or background in detection")
+        baseline_cropped = baseline
+        early_warped_cropped = early_warped
+        late_warped_cropped = late_warped
 
-    logging.info("Detecting puncture sites on baseline image (Day 0)")
-    baseline_points = detect_papules_red(baseline)
+    logging.info("Detecting puncture sites on cropped baseline image (Day 0)")
+    baseline_points = detect_papules_red(baseline_cropped)
     if not baseline_points:
         logging.warning("No puncture sites detected in baseline image")
         logging.warning("Consider adjusting detection parameters or checking image quality")
 
-    logging.info("Registering follow-up images to baseline")
-    matrix_early_to_base = affine_register(early, baseline)
-    matrix_late_to_base = affine_register(late, baseline)
-
-    logging.info("Warping follow-up images to baseline coordinate frame")
-    early_warped = warp_to_base(early, matrix_early_to_base, (base_width, base_height))
-    late_warped = warp_to_base(late, matrix_late_to_base, (base_width, base_height))
-
-    logging.info("Tracking Day 0 puncture sites across all registered timepoints")
-    # Since all images are now in baseline coordinate space, we use the same
-    # anatomical locations (baseline_points) across all timepoints to track
-    # the evolution of the puncture sites
+    logging.info("Tracking Day 0 puncture sites across all registered, cropped timepoints")
+    # Since all images are in baseline coordinate space and cropped to same region,
+    # we use the same anatomical locations across all timepoints
     early_points_base = baseline_points
     late_points_base = baseline_points
     logging.info(
@@ -946,7 +948,7 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     )
 
     logging.info("Creating annotated panels")
-    annotated_baseline = draw_boxes(baseline, baseline_points, "Day 0 (baseline)", radius=args.radius)
+    annotated_baseline = draw_boxes(baseline_cropped, baseline_points, "Day 0 (baseline)", radius=args.radius)
     annotated_early = draw_boxes(
         early_warped, early_points_base, "Day 1 (~24h)", radius=args.radius
     )
@@ -990,14 +992,14 @@ def run_pipeline(args: argparse.Namespace) -> Path:
         logging.info("Generating morphological visualizations")
 
         # Generate HSV mask overlays (on original baseline, shows what was detected)
-        baseline_hsv = visualize_hsv_mask(baseline)
+        baseline_hsv = visualize_hsv_mask(baseline_cropped)
 
         # Generate contour overlays showing tracked puncture sites
         # For baseline: show detection on original image
-        baseline_contours = visualize_contours(baseline, baseline_points)
+        baseline_contours = visualize_contours(baseline_cropped, baseline_points)
         # For warped images: show the same anatomical locations being tracked
-        early_contours = visualize_contours(early_warped, early_points_base)
-        late_contours = visualize_contours(late_warped, late_points_base)
+        early_contours = visualize_contours(early_warped_cropped, early_points_base)
+        late_contours = visualize_contours(late_warped_cropped, late_points_base)
 
         # Generate SIFT visualizations - use the images that were actually registered
         # If preprocessing enabled, show SIFT on preprocessed images; otherwise on originals
