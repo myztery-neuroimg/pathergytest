@@ -119,25 +119,51 @@ Each overlay marks the same papule pair aligned to the Day-1 contour, showing th
 
 ## Methodology
 
-Pre-processing (optional):
-- **Illumination correction**: LAB color space conversion with CLAHE applied to L channel to normalize lighting conditions.
-- **Bilateral filtering**: Edge-preserving noise reduction that smooths while maintaining sharp boundaries.
-- **Color normalization**: Normalizes color channels to improve consistency across images taken under different lighting.
-- **Unsharp masking**: Edge enhancement technique to improve feature detection and alignment.
+### Pipeline Order (Critical for Accuracy)
 
-Puncture Site Detection and Tracking:
-- **Day 0 (Baseline)**: HSV-based red hue segmentation to detect puncture sites (typically showing initial inflammation).
-- **Day 1-5+ (Follow-up)**: The same anatomical locations are tracked across all registered images. The pipeline does NOT perform independent detection on follow-up images; instead, it geometrically maps the Day 0 puncture coordinates to the same locations on the arm in subsequent timepoints through affine registration.
-- This approach ensures we track the evolution of the SAME puncture sites over time, not different spots detected independently on each image.
+The pipeline executes in this specific order to ensure accurate tracking:
 
-Registration:
-- **SIFT feature matching**: Scale-Invariant Feature Transform to detect distinctive keypoints.
-- **Affine transformation via RANSAC**: Robust estimation to align follow-up images to baseline frame.
+1. **Load and Pre-process** (optional illumination correction, bilateral filtering, color normalization)
+2. **Geomorphological Feature Identification**: Identify shared anatomical region (forearm) across ALL images BEFORE any detection or registration
+3. **Pre-crop to Shared Region**: Eliminate hands, elbows, and background from all images
+4. **Detect Puncture Sites**: Detect Day 0 puncture sites on the cropped baseline image only
+5. **Register and Warp**: Align cropped follow-up images to cropped baseline
+6. **Track Sites**: Use the same Day 0 coordinates across all registered images
 
-Visualization:
-- **Standard output**: Uniform coordinate geometry with red bounding boxes (22 px radius) and side-by-side montage.
-- **Morphological overlays**: HSV masks, contour visualizations, SIFT keypoint displays, and dark detection process visualization.
-- **Diagnostic panels**: 2×2 grids showing original, preprocessed, HSV mask, and contour/detection overlays for each timepoint.
+This order is critical because it:
+- Prevents confounding features (hands/elbows) from interfering with puncture site detection
+- Ensures puncture sites are never cropped out after detection
+- Maintains stable coordinate system throughout the pipeline
+- Focuses detection on the relevant forearm anatomy only
+
+### Technical Details
+
+**Geomorphological Feature Identification:**
+- Uses morphological operations (closing/opening) with elliptical kernels to identify skin regions
+- Filters connected components by minimum area to remove noise
+- Computes intersection of content masks across all three timepoints
+- Finds bounding box containing the shared forearm region
+- This happens BEFORE detection or registration to establish the anatomical region of interest
+
+**Pre-processing** (optional):
+- **Illumination correction**: LAB color space conversion with CLAHE applied to L channel to normalize lighting conditions
+- **Bilateral filtering**: Edge-preserving noise reduction that smooths while maintaining sharp boundaries
+- **Color normalization**: Normalizes color channels to improve consistency across images taken under different lighting
+- **Unsharp masking**: Edge enhancement technique to improve feature detection and alignment
+
+**Puncture Site Detection and Tracking:**
+- **Day 0 (Baseline)**: HSV-based red hue segmentation to detect puncture sites on the PRE-CROPPED baseline image
+- **Day 1-5+ (Follow-up)**: The same anatomical locations are tracked across all registered images; no independent detection is performed
+- Tracks the evolution of the SAME puncture sites over time through geometric mapping via affine registration
+
+**Registration:**
+- **SIFT feature matching**: Scale-Invariant Feature Transform to detect distinctive keypoints on cropped images
+- **Affine transformation via RANSAC**: Robust estimation to align cropped follow-up images to cropped baseline frame
+
+**Visualization:**
+- **Standard output**: Uniform coordinate geometry with red bounding boxes (22 px radius) and side-by-side montage
+- **Morphological overlays**: HSV masks, contour visualizations, SIFT keypoint displays on cropped images
+- **Diagnostic panels**: 2×2 grids showing original, preprocessed/warped, SIFT features, and tracked sites
 
 ---
 

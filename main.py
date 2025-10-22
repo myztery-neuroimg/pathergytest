@@ -888,6 +888,38 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     base_width, base_height = baseline.size
     logging.debug("Baseline image size: %s x %s", base_width, base_height)
 
+    logging.info("Identifying shared anatomical region across all images (pre-registration)")
+    logging.info(
+        "Shared content detection params: threshold=%d, kernel_size=%d, min_component_area=%d",
+        args.content_threshold,
+        args.content_kernel_size,
+        args.content_min_component_area,
+    )
+    # Find shared visual footprint BEFORE registration to identify forearm region
+    # This eliminates hands, elbows, and background before detection
+    shared_bbox = common_content_bbox(
+        [baseline, early, late],
+        threshold=args.content_threshold,
+        kernel_size=args.content_kernel_size,
+        min_component_area=args.content_min_component_area,
+    )
+
+    if shared_bbox:
+        left, top, right, bottom = shared_bbox
+        logging.info(
+            "Shared anatomical region found: left=%d, top=%d, right=%d, bottom=%d",
+            left, top, right, bottom
+        )
+        # Crop all images to shared region BEFORE detection and registration
+        baseline = baseline.crop(shared_bbox)
+        early = early.crop(shared_bbox)
+        late = late.crop(shared_bbox)
+        base_width, base_height = baseline.size
+        logging.info("Images cropped to shared forearm region: %d x %d", base_width, base_height)
+    else:
+        logging.warning("No shared anatomical region found; using full images")
+        logging.warning("This may include hands, elbows, or background in detection")
+
     logging.info("Detecting puncture sites on baseline image (Day 0)")
     baseline_points = detect_papules_red(baseline)
     if not baseline_points:
@@ -913,30 +945,6 @@ def run_pipeline(args: argparse.Namespace) -> Path:
         len(baseline_points)
     )
 
-    logging.info("Cropping images to their shared visual footprint")
-    logging.info(
-        "Shared content detection params: threshold=%d, kernel_size=%d, min_component_area=%d",
-        args.content_threshold,
-        args.content_kernel_size,
-        args.content_min_component_area,
-    )
-    bbox = common_content_bbox(
-        [baseline, early_warped, late_warped],
-        threshold=args.content_threshold,
-        kernel_size=args.content_kernel_size,
-        min_component_area=args.content_min_component_area,
-    )
-    if bbox:
-        (baseline, early_warped, late_warped), (
-            baseline_points,
-            early_points_base,
-            late_points_base,
-        ) = crop_images(
-            [baseline, early_warped, late_warped],
-            [baseline_points, early_points_base, late_points_base],
-            bbox,
-        )
-
     logging.info("Creating annotated panels")
     annotated_baseline = draw_boxes(baseline, baseline_points, "Day 0 (baseline)", radius=args.radius)
     annotated_early = draw_boxes(
@@ -947,32 +955,20 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     )
 
     panels = [annotated_baseline, annotated_early, annotated_late]
-    original_sizes = [panel.size for panel in panels]
-    for idx, (width, height) in enumerate(original_sizes, start=1):
-        logging.debug("Panel %d pre-crop size: %d x %d", idx, width, height)
 
-    bbox = common_content_bbox(panels)
+    # Final refinement: crop annotated panels to remove any black borders from warping
+    logging.debug("Applying final crop to remove warping artifacts from annotated panels")
+    bbox = common_content_bbox(panels, threshold=args.content_threshold)
     if bbox is None:
-        logging.warning("No shared content bounding box found; skipping crop")
+        logging.debug("No refinement crop needed; panels are clean")
     else:
         left, top, right, bottom = bbox
         bbox_width = right - left
         bbox_height = bottom - top
-        bbox_area = bbox_width * bbox_height
-        logging.info(
-            "Shared content bbox: left=%d, top=%d, right=%d, bottom=%d (area=%d)",
-            left,
-            top,
-            right,
-            bottom,
-            bbox_area,
+        logging.debug(
+            "Final refinement crop: left=%d, top=%d, right=%d, bottom=%d",
+            left, top, right, bottom
         )
-        for idx, (orig_w, orig_h) in enumerate(original_sizes, start=1):
-            original_area = orig_w * orig_h
-            retained_pct = (bbox_area / original_area * 100) if original_area else 0.0
-            logging.info(
-                "Panel %d retains %.2f%% of original area after crop", idx, retained_pct
-            )
         panels = [panel.crop(bbox) for panel in panels]
 
     logging.info("Building montage")
