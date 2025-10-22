@@ -155,6 +155,54 @@ def intelligent_precrop(pil_img: Image.Image, margin_percent: float = 0.15) -> T
     return cropped, bbox
 
 
+def detect_arm_orientation(pil_img: Image.Image) -> float:
+    """Detect the long axis of the arm using PCA on the skin mask.
+
+    This identifies the principal direction of the forearm, which is critical
+    for pathergy tests where injection sites are arranged lengthwise along the arm.
+
+    Returns:
+        Angle in degrees of the arm's principal axis (0-180 degrees from horizontal)
+    """
+
+    logging.debug("Detecting arm orientation using PCA")
+    skin_mask = segment_skin_region(pil_img)
+
+    # Get coordinates of all skin pixels
+    ys, xs = np.nonzero(skin_mask)
+    if len(xs) < 10:
+        logging.warning("Insufficient skin pixels for orientation detection; defaulting to 0°")
+        return 0.0
+
+    # Stack coordinates for PCA [x, y]
+    coords = np.column_stack([xs, ys])
+
+    # Compute mean-centered coordinates
+    mean = np.mean(coords, axis=0)
+    centered = coords - mean
+
+    # Compute covariance matrix
+    cov = np.cov(centered.T)
+
+    # Compute eigenvalues and eigenvectors
+    eigenvalues, eigenvectors = np.linalg.eig(cov)
+
+    # Principal axis is the eigenvector with largest eigenvalue
+    principal_idx = np.argmax(eigenvalues)
+    principal_axis = eigenvectors[:, principal_idx]
+
+    # Calculate angle from horizontal (in degrees)
+    # Angle is measured counter-clockwise from positive x-axis
+    angle = np.arctan2(principal_axis[1], principal_axis[0]) * 180 / np.pi
+
+    # Normalize to 0-180 range (we don't care about direction, just orientation)
+    if angle < 0:
+        angle += 180
+
+    logging.info("Detected arm orientation: %.1f° from horizontal", angle)
+    return float(angle)
+
+
 def illumination_correction(pil_img: Image.Image, clip_limit: float = 2.0) -> Image.Image:
     """Apply illumination correction using LAB color space and CLAHE on L channel."""
 
@@ -279,23 +327,57 @@ def preprocess_image(
 
 
 def affine_register(src_pil: Image.Image, dst_pil: Image.Image) -> np.ndarray:
-    """Estimate an affine transform aligning ``src`` → ``dst`` using SIFT + RANSAC."""
+    """Estimate an affine transform aligning ``src`` → ``dst`` using structural features.
 
-    logging.debug("Computing affine registration")
+    Uses edge-enhanced SIFT on arm contours and structural boundaries for robust
+    registration based on arm geometry (outline, elbow, creases) rather than
+    interior skin texture which may vary with lighting.
+    """
+
+    logging.debug("Computing affine registration using structural features")
     src = cv2.cvtColor(np.array(src_pil), cv2.COLOR_RGB2GRAY)
     dst = cv2.cvtColor(np.array(dst_pil), cv2.COLOR_RGB2GRAY)
+
+    # Apply edge detection to emphasize structural features (arm outline, elbow, creases)
+    # Using Canny edge detection to find high-gradient regions
+    src_edges = cv2.Canny(src, 50, 150)
+    dst_edges = cv2.Canny(dst, 50, 150)
+
+    # Dilate edges slightly to create better feature extraction regions
+    kernel = np.ones((3, 3), np.uint8)
+    src_edges = cv2.dilate(src_edges, kernel, iterations=1)
+    dst_edges = cv2.dilate(dst_edges, kernel, iterations=1)
+
+    logging.debug("Extracting SIFT features from structural edges")
     sift = cv2.SIFT_create()
-    keypoints_src, descriptors_src = sift.detectAndCompute(src, None)
-    keypoints_dst, descriptors_dst = sift.detectAndCompute(dst, None)
+
+    # Use edge masks to focus SIFT detection on structural features
+    # This prioritizes arm outline, elbow contours over interior skin texture
+    keypoints_src, descriptors_src = sift.detectAndCompute(src, mask=src_edges)
+    keypoints_dst, descriptors_dst = sift.detectAndCompute(dst, mask=dst_edges)
 
     if descriptors_src is None or descriptors_dst is None:
-        raise ValueError("Unable to find distinctive features for alignment")
+        logging.warning("Edge-based SIFT failed; falling back to full-image SIFT")
+        # Fallback to regular SIFT if edge-based detection fails
+        keypoints_src, descriptors_src = sift.detectAndCompute(src, None)
+        keypoints_dst, descriptors_dst = sift.detectAndCompute(dst, None)
+
+        if descriptors_src is None or descriptors_dst is None:
+            raise ValueError("Unable to find distinctive features for alignment")
+
+    logging.debug(
+        "Found %d structural keypoints in source, %d in destination",
+        len(keypoints_src), len(keypoints_dst)
+    )
 
     matcher = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
     matches = matcher.match(descriptors_src, descriptors_dst)
     if not matches:
         raise ValueError("Could not match keypoints between images")
 
+    logging.debug("Matched %d keypoint pairs", len(matches))
+
+    # Use top matches for RANSAC-based affine estimation
     matches = sorted(matches, key=lambda x: x.distance)[:60]
     src_pts = np.float32([keypoints_src[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
     dst_pts = np.float32([keypoints_dst[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
@@ -305,6 +387,7 @@ def affine_register(src_pil: Image.Image, dst_pil: Image.Image) -> np.ndarray:
     if matrix is None:
         raise ValueError("Affine transformation could not be estimated")
 
+    logging.debug("Successfully estimated affine transformation from structural features")
     return matrix
 
 
@@ -314,12 +397,14 @@ def detect_papules_red(
     min_area: int = 30,
     max_area: int = 500,
     min_distance_px: int = 20,
-    max_distance_px: int = 150
+    max_distance_px: int = 150,
+    arm_angle: float | None = None
 ) -> List[Coordinate]:
-    """Detect TWO closely-spaced injection sites using HSV thresholding.
+    """Detect TWO injection sites arranged lengthwise along the arm axis.
 
-    Pathergy test protocol requires two puncture sites close together (typically 2-3 cm).
-    This function finds the best pair of red spots that match this criterion.
+    Pathergy test protocol requires two puncture sites arranged along the arm's
+    long axis (typically 2-3 cm apart lengthwise), adjacent to +/- marker symbols.
+    This function finds the best pair that matches this clinical protocol.
 
     Args:
         pil_img: Input image
@@ -327,16 +412,24 @@ def detect_papules_red(
         max_area: Maximum area for a valid injection site (pixels)
         min_distance_px: Minimum distance between two injection sites (pixels)
         max_distance_px: Maximum distance between two injection sites (pixels)
+        arm_angle: Orientation angle of arm's long axis in degrees (0-180)
+                   If None, will be auto-detected
 
     Returns:
         List of two (x, y) coordinates for injection sites, or empty list if not found
     """
 
-    logging.debug("Detecting two closely-spaced injection sites")
+    logging.debug("Detecting two injection sites arranged lengthwise along arm")
+
+    # Auto-detect arm orientation if not provided
+    if arm_angle is None:
+        arm_angle = detect_arm_orientation(pil_img)
+        logging.debug("Auto-detected arm orientation for injection site detection: %.1f°", arm_angle)
+
     bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
-    # Detect red regions (injection sites and marker)
+    # Detect red regions (injection sites and +/- markers)
     mask = cv2.inRange(hsv, (0, 60, 60), (12, 255, 255)) | cv2.inRange(
         hsv, (170, 60, 60), (180, 255, 255)
     )
@@ -347,7 +440,7 @@ def detect_papules_red(
     candidates: List[Tuple[int, int, float, float]] = []
     for contour in contours:
         area = cv2.contourArea(contour)
-        if min_area <= area <= max_area:  # Filter by size
+        if min_area <= area <= max_area:  # Filter by size (excludes large markers)
             moments = cv2.moments(contour)
             if moments["m00"]:
                 cx = int(moments["m10"] / moments["m00"])
@@ -363,7 +456,9 @@ def detect_papules_red(
         logging.warning("Found fewer than 2 injection site candidates")
         return [(x, y) for x, y, _, _ in candidates]
 
-    # Find the best pair: two sites close together with similar properties
+    logging.debug("Found %d injection site candidates; finding best lengthwise pair", len(candidates))
+
+    # Find the best pair: two sites arranged along arm axis with similar properties
     best_pair = None
     best_score = float('inf')
 
@@ -373,28 +468,57 @@ def detect_papules_red(
             distance = math.hypot(x2 - x1, y2 - y1)
 
             if min_distance_px <= distance <= max_distance_px:
-                # Score based on:
-                # - Distance similarity to expected spacing
-                # - Size similarity (both should be similar)
-                # - Circularity (both should be circular)
+                # Calculate angle of line connecting the two points
+                pair_angle = math.atan2(y2 - y1, x2 - x1) * 180 / math.pi
+                if pair_angle < 0:
+                    pair_angle += 180
+
+                # Angular difference from arm's long axis
+                # We want sites arranged ALONG the arm (parallel to arm axis)
+                angle_diff = min(
+                    abs(pair_angle - arm_angle),
+                    abs(pair_angle - arm_angle + 180),
+                    abs(pair_angle - arm_angle - 180)
+                )
+
+                # Score components (all lower is better):
+                # 1. Distance from ideal spacing
                 target_distance = (min_distance_px + max_distance_px) / 2
                 distance_score = abs(distance - target_distance)
+
+                # 2. Size similarity (both sites should be similar size)
                 size_diff = abs(area1 - area2) / max(area1, area2)
-                circ_score = 2.0 - (circ1 + circ2)  # Higher circularity = better
+
+                # 3. Circularity (both should be circular)
+                circ_score = 2.0 - (circ1 + circ2)
+
+                # 4. Alignment with arm axis (CRITICAL for pathergy protocol)
+                # Heavily penalize perpendicular arrangements
+                alignment_score = angle_diff
 
                 # Combined score (lower is better)
-                score = distance_score + (size_diff * 50) + (circ_score * 100)
+                # Weight alignment heavily since pathergy sites MUST be lengthwise
+                score = (
+                    distance_score +
+                    (size_diff * 50) +
+                    (circ_score * 100) +
+                    (alignment_score * 3.0)  # 3x weight for alignment
+                )
 
                 if score < best_score:
                     best_score = score
                     best_pair = ((x1, y1), (x2, y2))
+                    best_alignment = angle_diff
 
     if best_pair:
-        logging.info("Found injection site pair with score: %.2f", best_score)
-        # Sort by x-coordinate for consistent ordering
+        logging.info(
+            "Found lengthwise injection site pair - score: %.2f, alignment: %.1f° from arm axis",
+            best_score, best_alignment
+        )
+        # Sort by position along arm axis for consistent ordering
         return sorted(best_pair, key=lambda p: p[0])
     else:
-        logging.warning("No valid injection site pair found; returning largest candidates")
+        logging.warning("No valid lengthwise injection site pair found; returning largest candidates")
         # Fallback: return two largest candidates
         candidates.sort(key=lambda t: t[2], reverse=True)
         return [(x, y) for x, y, _, _ in candidates[:2]]
@@ -537,6 +661,87 @@ def visualize_dark_detection(
     for x, y in points:
         cv2.circle(result, (x, y), 10, (255, 0, 255), 2)  # Magenta circles
         cv2.circle(result, (x, y), 2, (255, 0, 255), -1)
+
+    return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+
+
+def visualize_structural_edges(pil_img: Image.Image) -> Image.Image:
+    """Create visualization showing structural edges used for registration.
+
+    Shows Canny edges (arm outline, elbow, creases) that are used for
+    structural feature-based registration.
+    """
+
+    logging.debug("Creating structural edge visualization")
+    gray = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2GRAY)
+    bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+    # Apply edge detection (same as registration)
+    edges = cv2.Canny(gray, 50, 150)
+    kernel = np.ones((3, 3), np.uint8)
+    edges = cv2.dilate(edges, kernel, iterations=1)
+
+    # Create colored overlay: edges in cyan on semi-transparent original
+    overlay = bgr.copy()
+    overlay[edges > 0] = [255, 255, 0]  # Cyan (yellow in BGR) for edges
+
+    # Blend with original image
+    result = cv2.addWeighted(bgr, 0.6, overlay, 0.4, 0)
+
+    return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+
+
+def visualize_arm_orientation(pil_img: Image.Image) -> Image.Image:
+    """Create visualization showing detected arm orientation axis.
+
+    Overlays the principal axis (long axis) of the arm in green,
+    showing the direction used for lengthwise injection site detection.
+    """
+
+    logging.debug("Creating arm orientation visualization")
+    bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    skin_mask = segment_skin_region(pil_img)
+
+    # Get coordinates and compute PCA
+    ys, xs = np.nonzero(skin_mask)
+    if len(xs) < 10:
+        return pil_img  # Return original if no skin found
+
+    coords = np.column_stack([xs, ys])
+    mean = np.mean(coords, axis=0)
+    centered = coords - mean
+    cov = np.cov(centered.T)
+    eigenvalues, eigenvectors = np.linalg.eig(cov)
+
+    # Get principal axis
+    principal_idx = np.argmax(eigenvalues)
+    principal_axis = eigenvectors[:, principal_idx].real
+
+    # Draw the principal axis as a line through the centroid
+    height, width = skin_mask.shape
+    axis_length = min(width, height) // 2
+
+    # Calculate endpoints of the axis line
+    center_x, center_y = int(mean[0]), int(mean[1])
+    dx = principal_axis[0] * axis_length
+    dy = principal_axis[1] * axis_length
+
+    pt1 = (int(center_x - dx), int(center_y - dy))
+    pt2 = (int(center_x + dx), int(center_y + dy))
+
+    # Draw on image
+    result = bgr.copy()
+    cv2.line(result, pt1, pt2, (0, 255, 0), 3)  # Green line for arm axis
+    cv2.circle(result, (center_x, center_y), 8, (0, 255, 0), -1)  # Green dot at centroid
+
+    # Add angle label
+    angle = np.arctan2(principal_axis[1], principal_axis[0]) * 180 / np.pi
+    if angle < 0:
+        angle += 180
+    cv2.putText(
+        result, f"Arm axis: {angle:.1f}deg",
+        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
+    )
 
     return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
 
@@ -1220,6 +1425,10 @@ def run_pipeline(args: argparse.Namespace) -> Path:
         # Generate HSV mask overlays (on original baseline, shows what was detected)
         baseline_hsv = visualize_hsv_mask(baseline_cropped)
 
+        # Generate structural feature visualizations
+        baseline_edges = visualize_structural_edges(baseline)
+        baseline_arm_axis = visualize_arm_orientation(baseline)
+
         # Generate contour overlays showing tracked puncture sites
         # For baseline: show detection on original image
         baseline_contours = visualize_contours(baseline_cropped, baseline_points)
@@ -1239,6 +1448,8 @@ def run_pipeline(args: argparse.Namespace) -> Path:
         if args.save_morphological_overlays:
             logging.info("Saving individual morphological overlays")
             baseline_hsv.save(output_dir / "baseline_hsv_mask.jpg", quality=95)
+            baseline_edges.save(output_dir / "baseline_structural_edges.jpg", quality=95)
+            baseline_arm_axis.save(output_dir / "baseline_arm_orientation.jpg", quality=95)
             baseline_contours.save(output_dir / "baseline_contours_detected.jpg", quality=95)
             early_contours.save(output_dir / "early_tracked_sites.jpg", quality=95)
             late_contours.save(output_dir / "late_tracked_sites.jpg", quality=95)
@@ -1250,10 +1461,10 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     if args.generate_diagnostic_panels:
         logging.info("Generating diagnostic panels")
 
-        # Baseline diagnostic panel: Shows detection process
+        # Baseline diagnostic panel: Shows arm orientation and detection process
         baseline_panel = create_diagnostic_panel(
             baseline_original,
-            baseline,
+            baseline_arm_axis,
             baseline_hsv,
             baseline_contours,
             padding=10,
