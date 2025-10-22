@@ -563,107 +563,120 @@ def preprocess_image(
 
 
 def affine_register(src_pil: Image.Image, dst_pil: Image.Image) -> np.ndarray:
-    """Estimate an affine transform aligning ``src`` → ``dst`` using comprehensive geomorphological features.
+    """Estimate an affine transform aligning ``src`` → ``dst`` using ARM MORPHOLOGY as primary basis.
 
-    Uses multi-scale edge detection, corner detection, and blob detection to capture:
-    - Arm outline and contours
-    - Elbow, wrist, hand structures
-    - Skin features (freckles, moles, marks)
-    - Hair patterns and boundaries
-    - Anatomical landmarks for robust tracking
+    PRIMARY registration features (arm-specific morphology):
+    - Arm outline shape (unique boundary contour)
+    - Hair patterns on arm surface
+    - Freckles, moles, skin marks
+    - Skin texture and wrinkles
+
+    This arm's unique morphology is the basis for alignment, not generic edges.
     """
 
-    logging.debug("Computing affine registration using comprehensive geomorphological features")
+    logging.info("Computing registration based on THIS arm's unique morphology (outline, hair, freckles)")
     src = cv2.cvtColor(np.array(src_pil), cv2.COLOR_RGB2GRAY)
     dst = cv2.cvtColor(np.array(dst_pil), cv2.COLOR_RGB2GRAY)
 
-    # Detect arm outline contours for both images
+    # STEP 1: Detect arm outline - this is the PRIMARY structural feature
     src_arm_outline = detect_arm_outline(src_pil)
     dst_arm_outline = detect_arm_outline(dst_pil)
 
-    # Create arm outline mask for feature extraction
     src_height, src_width = src.shape
     dst_height, dst_width = dst.shape
+
+    # Create filled arm region masks
+    src_arm_region = np.zeros((src_height, src_width), dtype=np.uint8)
+    dst_arm_region = np.zeros((dst_height, dst_width), dtype=np.uint8)
+
+    if src_arm_outline is not None:
+        cv2.drawContours(src_arm_region, [src_arm_outline], -1, 255, -1)  # Filled
+    else:
+        src_arm_region[:] = 255  # Fallback: use whole image
+
+    if dst_arm_outline is not None:
+        cv2.drawContours(dst_arm_region, [dst_arm_outline], -1, 255, -1)  # Filled
+    else:
+        dst_arm_region[:] = 255  # Fallback: use whole image
+
+    # STEP 2: Create morphology-focused feature mask
+    # Emphasize: arm boundary (thick), hair/freckles (high gradient), skin texture
+
+    # Arm outline boundary - WIDE band to capture shape
     src_outline_mask = np.zeros((src_height, src_width), dtype=np.uint8)
     dst_outline_mask = np.zeros((dst_height, dst_width), dtype=np.uint8)
 
     if src_arm_outline is not None:
-        # Draw arm outline contour with some thickness to capture boundary features
-        cv2.drawContours(src_outline_mask, [src_arm_outline], -1, 255, thickness=20)
-        logging.debug("Using arm outline mask for source image features")
+        cv2.drawContours(src_outline_mask, [src_arm_outline], -1, 255, thickness=40)  # THICK band
 
     if dst_arm_outline is not None:
-        cv2.drawContours(dst_outline_mask, [dst_arm_outline], -1, 255, thickness=20)
-        logging.debug("Using arm outline mask for destination image features")
+        cv2.drawContours(dst_outline_mask, [dst_arm_outline], -1, 255, thickness=40)  # THICK band
 
-    # Multi-scale edge detection for structural features
-    # Lower threshold captures subtle features (wrinkles, freckles)
-    # Higher threshold captures strong edges (arm outline, elbow)
-    src_edges_strong = cv2.Canny(src, 80, 200)
-    src_edges_subtle = cv2.Canny(src, 30, 100)
-    dst_edges_strong = cv2.Canny(dst, 80, 200)
-    dst_edges_subtle = cv2.Canny(dst, 30, 100)
-
-    # Combine strong and subtle edges
-    src_edges = cv2.bitwise_or(src_edges_strong, src_edges_subtle)
-    dst_edges = cv2.bitwise_or(dst_edges_strong, dst_edges_subtle)
-
-    # Dilate edges to create feature extraction regions
-    kernel = np.ones((3, 3), np.uint8)
-    src_edges_dilated = cv2.dilate(src_edges, kernel, iterations=2)
-    dst_edges_dilated = cv2.dilate(dst_edges, kernel, iterations=2)
-
-    # Create feature-rich mask: edges + high-gradient interior + ARM OUTLINE
+    # Interior features: hair (dark), freckles/moles (dark spots), texture
+    # Use Laplacian to find high-gradient regions (hair follicles, freckles)
     src_gradient = cv2.Laplacian(src, cv2.CV_64F)
     dst_gradient = cv2.Laplacian(dst, cv2.CV_64F)
-    src_features_mask = cv2.bitwise_or(
-        cv2.bitwise_or(src_edges_dilated, src_outline_mask),
-        cv2.threshold(np.abs(src_gradient).astype(np.uint8), 20, 255, cv2.THRESH_BINARY)[1]
-    )
-    dst_features_mask = cv2.bitwise_or(
-        cv2.bitwise_or(dst_edges_dilated, dst_outline_mask),
-        cv2.threshold(np.abs(dst_gradient).astype(np.uint8), 20, 255, cv2.THRESH_BINARY)[1]
-    )
 
-    logging.debug("Extracting SIFT features from geomorphological structures")
-    sift = cv2.SIFT_create(nfeatures=1000)  # Increase feature count for better coverage
+    # Threshold for strong gradients (hair, freckles, moles)
+    src_interior_features = cv2.threshold(np.abs(src_gradient).astype(np.uint8), 15, 255, cv2.THRESH_BINARY)[1]
+    dst_interior_features = cv2.threshold(np.abs(dst_gradient).astype(np.uint8), 15, 255, cv2.THRESH_BINARY)[1]
 
-    # Extract features from geomorphologically-rich regions
-    keypoints_src, descriptors_src = sift.detectAndCompute(src, mask=src_features_mask)
-    keypoints_dst, descriptors_dst = sift.detectAndCompute(dst, mask=dst_features_mask)
+    # Only keep features WITHIN the arm region (not background)
+    src_interior_features = cv2.bitwise_and(src_interior_features, src_arm_region)
+    dst_interior_features = cv2.bitwise_and(dst_interior_features, dst_arm_region)
+
+    # MORPHOLOGY MASK = ARM OUTLINE (heavy weight) + interior features (hair/freckles)
+    # The outline gets PRIORITY - it's the primary alignment feature
+    src_morphology_mask = cv2.bitwise_or(src_outline_mask, src_interior_features)
+    dst_morphology_mask = cv2.bitwise_or(dst_outline_mask, dst_interior_features)
+
+    # Dilate to create feature extraction regions
+    kernel = np.ones((5, 5), np.uint8)
+    src_morphology_mask = cv2.dilate(src_morphology_mask, kernel, iterations=1)
+    dst_morphology_mask = cv2.dilate(dst_morphology_mask, kernel, iterations=1)
+
+    # STEP 3: Extract SIFT features from ARM MORPHOLOGY (outline + hair/freckles)
+    logging.debug("Extracting SIFT features from arm-specific morphology")
+    sift = cv2.SIFT_create(nfeatures=1500)  # More features for better morphology coverage
+
+    # Extract features ONLY from arm morphology regions
+    keypoints_src, descriptors_src = sift.detectAndCompute(src, mask=src_morphology_mask)
+    keypoints_dst, descriptors_dst = sift.detectAndCompute(dst, mask=dst_morphology_mask)
 
     if descriptors_src is None or descriptors_dst is None:
-        logging.warning("Geomorphological SIFT failed; falling back to full-image SIFT")
-        keypoints_src, descriptors_src = sift.detectAndCompute(src, None)
-        keypoints_dst, descriptors_dst = sift.detectAndCompute(dst, None)
+        logging.warning("Morphology-based SIFT failed; falling back to full-arm SIFT")
+        keypoints_src, descriptors_src = sift.detectAndCompute(src, mask=src_arm_region)
+        keypoints_dst, descriptors_dst = sift.detectAndCompute(dst, mask=dst_arm_region)
 
         if descriptors_src is None or descriptors_dst is None:
             raise ValueError("Unable to find distinctive features for alignment")
 
     logging.info(
-        "Found %d geomorphological keypoints in source, %d in destination (edges, landmarks, textures)",
+        "Found %d morphological keypoints in source, %d in destination (arm outline, hair, freckles)",
         len(keypoints_src), len(keypoints_dst)
     )
 
-    # Match features with ratio test for robust matching
+    # STEP 4: Match morphological features between images
+    # Use strict ratio test since we're matching specific anatomical features
     matcher = cv2.BFMatcher(cv2.NORM_L2)
     matches = matcher.knnMatch(descriptors_src, descriptors_dst, k=2)
 
-    # Lowe's ratio test to filter good matches
+    # Lowe's ratio test - stricter for morphology matching
     good_matches = []
     for match_pair in matches:
         if len(match_pair) == 2:
             m, n = match_pair
-            if m.distance < 0.75 * n.distance:  # Good match ratio
+            if m.distance < 0.7 * n.distance:  # Stricter for anatomical features
                 good_matches.append(m)
 
     if not good_matches:
-        raise ValueError("Could not match keypoints between images")
+        raise ValueError("Could not match morphological features between images")
 
-    logging.info("Matched %d high-quality keypoint pairs", len(good_matches))
+    logging.info("Matched %d high-quality morphological feature pairs", len(good_matches))
 
     # Use top matches for RANSAC-based affine estimation
-    good_matches = sorted(good_matches, key=lambda x: x.distance)[:100]
+    # Prioritize closest matches (most similar morphological features)
+    good_matches = sorted(good_matches, key=lambda x: x.distance)[:150]  # More matches for better fit
     src_pts = np.float32([keypoints_src[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
     dst_pts = np.float32([keypoints_dst[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
     matrix, inliers = cv2.estimateAffinePartial2D(
@@ -674,7 +687,7 @@ def affine_register(src_pil: Image.Image, dst_pil: Image.Image) -> np.ndarray:
 
     inlier_count = np.sum(inliers) if inliers is not None else 0
     logging.info(
-        "Registration complete: %d inliers from %d matches (%.1f%% consensus)",
+        "Morphology-based registration: %d inliers from %d matches (%.1f%% consensus) using arm outline/hair/freckles",
         inlier_count, len(good_matches), 100.0 * inlier_count / len(good_matches)
     )
 
