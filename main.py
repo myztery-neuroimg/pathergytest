@@ -78,6 +78,43 @@ def segment_skin_region(pil_img: Image.Image) -> np.ndarray:
     return skin_mask
 
 
+def detect_arm_outline(pil_img: Image.Image) -> np.ndarray | None:
+    """Detect the outer shape/outline of the arm against background (floor, etc.).
+
+    This uses a different threshold and search strategy than pathergy site detection
+    since we're segmenting arm vs background rather than subtle skin features.
+
+    Returns the contour of the largest arm region, or None if not found.
+    """
+
+    logging.debug("Detecting arm outline against background")
+    gray = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2GRAY)
+
+    # Use Otsu's thresholding to separate arm from darker background (floor, etc.)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Morphological operations to clean up the mask
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=3)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=2)
+
+    # Find contours
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        logging.warning("No arm outline contours found")
+        return None
+
+    # Find largest contour (should be the arm)
+    arm_contour = max(contours, key=cv2.contourArea)
+    area = cv2.contourArea(arm_contour)
+
+    logging.info("Detected arm outline: area=%.0f px, perimeter=%.1f px",
+                 area, cv2.arcLength(arm_contour, True))
+
+    return arm_contour
+
+
 def find_forearm_bbox(pil_img: Image.Image, margin_percent: float = 0.15) -> Tuple[int, int, int, int] | None:
     """Find bounding box of the forearm region with safety margin for registration.
 
@@ -540,6 +577,25 @@ def affine_register(src_pil: Image.Image, dst_pil: Image.Image) -> np.ndarray:
     src = cv2.cvtColor(np.array(src_pil), cv2.COLOR_RGB2GRAY)
     dst = cv2.cvtColor(np.array(dst_pil), cv2.COLOR_RGB2GRAY)
 
+    # Detect arm outline contours for both images
+    src_arm_outline = detect_arm_outline(src_pil)
+    dst_arm_outline = detect_arm_outline(dst_pil)
+
+    # Create arm outline mask for feature extraction
+    src_height, src_width = src.shape
+    dst_height, dst_width = dst.shape
+    src_outline_mask = np.zeros((src_height, src_width), dtype=np.uint8)
+    dst_outline_mask = np.zeros((dst_height, dst_width), dtype=np.uint8)
+
+    if src_arm_outline is not None:
+        # Draw arm outline contour with some thickness to capture boundary features
+        cv2.drawContours(src_outline_mask, [src_arm_outline], -1, 255, thickness=20)
+        logging.debug("Using arm outline mask for source image features")
+
+    if dst_arm_outline is not None:
+        cv2.drawContours(dst_outline_mask, [dst_arm_outline], -1, 255, thickness=20)
+        logging.debug("Using arm outline mask for destination image features")
+
     # Multi-scale edge detection for structural features
     # Lower threshold captures subtle features (wrinkles, freckles)
     # Higher threshold captures strong edges (arm outline, elbow)
@@ -557,15 +613,15 @@ def affine_register(src_pil: Image.Image, dst_pil: Image.Image) -> np.ndarray:
     src_edges_dilated = cv2.dilate(src_edges, kernel, iterations=2)
     dst_edges_dilated = cv2.dilate(dst_edges, kernel, iterations=2)
 
-    # Create feature-rich mask: edges + high-gradient interior regions (moles, freckles)
+    # Create feature-rich mask: edges + high-gradient interior + ARM OUTLINE
     src_gradient = cv2.Laplacian(src, cv2.CV_64F)
     dst_gradient = cv2.Laplacian(dst, cv2.CV_64F)
     src_features_mask = cv2.bitwise_or(
-        src_edges_dilated,
+        cv2.bitwise_or(src_edges_dilated, src_outline_mask),
         cv2.threshold(np.abs(src_gradient).astype(np.uint8), 20, 255, cv2.THRESH_BINARY)[1]
     )
     dst_features_mask = cv2.bitwise_or(
-        dst_edges_dilated,
+        cv2.bitwise_or(dst_edges_dilated, dst_outline_mask),
         cv2.threshold(np.abs(dst_gradient).astype(np.uint8), 20, 255, cv2.THRESH_BINARY)[1]
     )
 
@@ -1857,13 +1913,14 @@ def run_pipeline(args: argparse.Namespace) -> Path:
         logging.warning("No puncture sites detected in baseline image")
         logging.warning("Consider adjusting detection parameters or checking image quality")
 
-    logging.info("Tracking Day 0 puncture sites across all registered, cropped timepoints")
-    # Since all images are in baseline coordinate space and cropped to same region,
-    # we use the same anatomical locations across all timepoints
+    logging.info("Using geomorphological registration to track baseline sites across timepoints")
+    # Since early/late images are already registered to baseline coordinate frame,
+    # the same (x, y) coordinates correspond to the same anatomical location.
+    # The registration (arm outline + multi-scale edges) handles position/angle differences.
     early_points_base = baseline_points
     late_points_base = baseline_points
     logging.info(
-        "Tracking %d puncture site(s) at same anatomical locations across all timepoints",
+        "Tracking %d puncture site(s) at same anatomical locations using geomorphic alignment",
         len(baseline_points)
     )
 
