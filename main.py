@@ -340,11 +340,12 @@ def detect_markers(pil_img: Image.Image) -> Tuple[List[Coordinate], Coordinate |
     contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     # Look for larger regions that could be markers
-    # Markers are typically larger than injection sites (500+ pixels)
+    # Markers are typically larger than injection sites
+    # Adjusted threshold for lower resolution images
     marker_candidates = []
     for contour in contours:
         area = cv2.contourArea(contour)
-        if area > 500:  # Larger than injection sites
+        if area > 200:  # Larger than injection sites (adjusted for low-res)
             moments = cv2.moments(contour)
             if moments["m00"]:
                 cx = int(moments["m10"] / moments["m00"])
@@ -357,11 +358,27 @@ def detect_markers(pil_img: Image.Image) -> Tuple[List[Coordinate], Coordinate |
         marker_candidates.sort(key=lambda t: t[2], reverse=True)
         markers = [(x, y) for x, y, _ in marker_candidates]
 
-        # Compute centroid of marker region
+        # Find the closest pair of markers (these should be the + and - symbols)
+        # This is more reliable than using all markers
         if len(markers) >= 2:
-            centroid_x = int(np.mean([x for x, y in markers[:2]]))
-            centroid_y = int(np.mean([y for x, y in markers[:2]]))
+            min_dist = float('inf')
+            best_pair = (markers[0], markers[1])
+
+            for i, m1 in enumerate(markers):
+                for m2 in markers[i+1:]:
+                    dist = math.hypot(m2[0] - m1[0], m2[1] - m1[1])
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_pair = (m1, m2)
+
+            # Use centroid of closest pair as test site
+            centroid_x = int((best_pair[0][0] + best_pair[1][0]) / 2)
+            centroid_y = int((best_pair[0][1] + best_pair[1][1]) / 2)
             marker_centroid = (centroid_x, centroid_y)
+            logging.info(
+                "Using closest marker pair at distance %.1f px: (%d, %d) and (%d, %d)",
+                min_dist, best_pair[0][0], best_pair[0][1], best_pair[1][0], best_pair[1][1]
+            )
         else:
             marker_centroid = markers[0]
 
@@ -563,7 +580,7 @@ def affine_register(src_pil: Image.Image, dst_pil: Image.Image) -> np.ndarray:
 def detect_papules_red(
     pil_img: Image.Image,
     *,
-    min_area: int = 30,
+    min_area: int = 10,
     max_area: int = 500,
 ) -> List[Coordinate]:
     """Detect TWO injection sites arranged lengthwise along the arm axis.
@@ -607,9 +624,10 @@ def detect_papules_red(
     )
 
     # Step 3: Convert real-world pathergy test spacing to pixels
-    # Standard protocol: injection sites 2-3 cm apart
-    min_distance_cm = 2.0
-    max_distance_cm = 3.0
+    # Standard protocol: injection sites are VERY close together (0.5-1.5 cm apart)
+    # They are adjacent to the + and - markers
+    min_distance_cm = 0.5
+    max_distance_cm = 1.5
     min_distance_px = int(min_distance_cm * pixels_per_cm)
     max_distance_px = int(max_distance_cm * pixels_per_cm)
 
@@ -626,15 +644,16 @@ def detect_papules_red(
     bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
-    mask = cv2.inRange(hsv, (0, 60, 60), (12, 255, 255)) | cv2.inRange(
-        hsv, (170, 60, 60), (180, 255, 255)
+    # Relaxed thresholds for subtle redness in low-res images
+    mask = cv2.inRange(hsv, (0, 40, 40), (15, 255, 255)) | cv2.inRange(
+        hsv, (165, 40, 40), (180, 255, 255)
     )
     mask = cv2.medianBlur(mask, 3)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     # Extract potential injection sites (filter by size and proximity to markers)
     candidates: List[Tuple[int, int, float, float]] = []
-    search_radius_px = int(5.0 * pixels_per_cm)  # Search within 5 cm of markers
+    search_radius_px = int(3.0 * pixels_per_cm)  # Search within 3 cm of markers (sites are very close)
 
     for contour in contours:
         area = cv2.contourArea(contour)
@@ -646,13 +665,19 @@ def detect_papules_red(
 
                 # Check proximity to marker region
                 dist_to_markers = math.hypot(cx - marker_centroid[0], cy - marker_centroid[1])
+                logging.debug(
+                    "Candidate at (%d, %d): area=%.1f, dist_to_markers=%.1f (max=%.1f)",
+                    cx, cy, area, dist_to_markers, search_radius_px
+                )
                 if dist_to_markers > search_radius_px:
+                    logging.debug("  -> Rejected: too far from markers")
                     continue  # Too far from markers
 
                 # Calculate circularity (injection sites should be roughly circular)
                 perimeter = cv2.arcLength(contour, True)
                 circularity = (4 * math.pi * area) / (perimeter * perimeter + 1e-6)
 
+                logging.debug("  -> Accepted: circularity=%.2f", circularity)
                 candidates.append((cx, cy, area, circularity))
 
     if len(candidates) < 2:
