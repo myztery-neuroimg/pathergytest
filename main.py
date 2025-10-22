@@ -79,21 +79,21 @@ def segment_skin_region(pil_img: Image.Image) -> np.ndarray:
 
 
 def detect_arm_outline(pil_img: Image.Image) -> np.ndarray | None:
-    """Detect the outer shape/outline of the arm against background (floor, etc.).
+    """Detect the outer shape/outline of the arm using skin segmentation.
 
-    This uses a different threshold and search strategy than pathergy site detection
-    since we're segmenting arm vs background rather than subtle skin features.
-
-    Returns the contour of the largest arm region, or None if not found.
+    Uses HSV and YCrCb color-based skin detection to segment arm from background.
+    Returns the contour of the largest skin region (arm), or None if not found.
     """
 
-    logging.debug("Detecting arm outline against background")
-    gray = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2GRAY)
+    logging.debug("Detecting arm outline using skin segmentation")
 
-    # Use Otsu's thresholding to separate arm from darker background (floor, etc.)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Use existing skin segmentation (HSV + YCrCb)
+    skin_mask = segment_skin_region(pil_img)
 
-    # Morphological operations to clean up the mask
+    # Convert boolean mask to uint8
+    binary = (skin_mask * 255).astype(np.uint8)
+
+    # Additional morphological operations to get clean arm boundary
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=3)
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=2)
@@ -102,14 +102,14 @@ def detect_arm_outline(pil_img: Image.Image) -> np.ndarray | None:
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     if not contours:
-        logging.warning("No arm outline contours found")
+        logging.warning("No arm outline contours found in skin mask")
         return None
 
-    # Find largest contour (should be the arm)
+    # Find largest skin contour (should be the arm)
     arm_contour = max(contours, key=cv2.contourArea)
     area = cv2.contourArea(arm_contour)
 
-    logging.info("Detected arm outline: area=%.0f px, perimeter=%.1f px",
+    logging.info("Detected arm outline from skin: area=%.0f px, perimeter=%.1f px",
                  area, cv2.arcLength(arm_contour, True))
 
     return arm_contour
@@ -563,135 +563,67 @@ def preprocess_image(
 
 
 def affine_register(src_pil: Image.Image, dst_pil: Image.Image) -> np.ndarray:
-    """Estimate an affine transform aligning ``src`` → ``dst`` using ARM MORPHOLOGY as primary basis.
+    """Estimate an affine transform aligning ``src`` → ``dst`` using ECC (Enhanced Correlation Coefficient).
 
-    PRIMARY registration features (arm-specific morphology):
-    - Arm outline shape (unique boundary contour)
-    - Hair patterns on arm surface
-    - Freckles, moles, skin marks
-    - Skin texture and wrinkles
+    Uses intensity-based image alignment via ECC criterion on the entire arm morphology
+    (arm, wrist, elbow). This is more robust than feature-based methods for medical images
+    with mismatched colors, angles, and lighting.
 
-    This arm's unique morphology is the basis for alignment, not generic edges.
+    Args:
+        src_pil: Source image to transform
+        dst_pil: Destination (reference) image
+
+    Returns:
+        2x3 affine transformation matrix
     """
 
-    logging.info("Computing registration based on THIS arm's unique morphology (outline, hair, freckles)")
+    logging.info("Computing ECC registration using entire arm morphology (arm, wrist, elbow)")
     src = cv2.cvtColor(np.array(src_pil), cv2.COLOR_RGB2GRAY)
     dst = cv2.cvtColor(np.array(dst_pil), cv2.COLOR_RGB2GRAY)
 
-    # STEP 1: Detect arm outline - this is the PRIMARY structural feature
-    src_arm_outline = detect_arm_outline(src_pil)
-    dst_arm_outline = detect_arm_outline(dst_pil)
+    src_h, src_w = src.shape
+    dst_h, dst_w = dst.shape
 
-    src_height, src_width = src.shape
-    dst_height, dst_width = dst.shape
+    # Ensure images are same size for ECC
+    if (src_h, src_w) != (dst_h, dst_w):
+        logging.debug(f"Resizing src from {src_w}x{src_h} to match dst {dst_w}x{dst_h}")
+        src = cv2.resize(src, (dst_w, dst_h), interpolation=cv2.INTER_LINEAR)
 
-    # Create filled arm region masks
-    src_arm_region = np.zeros((src_height, src_width), dtype=np.uint8)
-    dst_arm_region = np.zeros((dst_height, dst_width), dtype=np.uint8)
+    # Use skin segmentation to create registration mask (entire arm region)
+    logging.debug("Using skin segmentation mask for arm region")
+    skin_mask = segment_skin_region(dst_pil)
+    mask = (skin_mask * 255).astype(np.uint8)
 
-    if src_arm_outline is not None:
-        cv2.drawContours(src_arm_region, [src_arm_outline], -1, 255, -1)  # Filled
-    else:
-        src_arm_region[:] = 255  # Fallback: use whole image
+    # Initialize transformation matrix (identity + translation estimate)
+    warp_matrix = np.eye(2, 3, dtype=np.float32)
 
-    if dst_arm_outline is not None:
-        cv2.drawContours(dst_arm_region, [dst_arm_outline], -1, 255, -1)  # Filled
-    else:
-        dst_arm_region[:] = 255  # Fallback: use whole image
+    # ECC criteria: max iterations and convergence epsilon
+    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 5000, 1e-8)
 
-    # STEP 2: Create morphology-focused feature mask
-    # Emphasize: arm boundary (thick), hair/freckles (high gradient), skin texture
+    try:
+        # Find optimal affine transform using ECC
+        (cc, warp_matrix) = cv2.findTransformECC(
+            templateImage=dst,
+            inputImage=src,
+            warpMatrix=warp_matrix,
+            motionType=cv2.MOTION_AFFINE,
+            criteria=criteria,
+            inputMask=mask,
+            gaussFiltSize=5
+        )
 
-    # Arm outline boundary - WIDE band to capture shape
-    src_outline_mask = np.zeros((src_height, src_width), dtype=np.uint8)
-    dst_outline_mask = np.zeros((dst_height, dst_width), dtype=np.uint8)
+        logging.info(
+            "ECC registration complete: correlation coefficient=%.4f",
+            cc
+        )
 
-    if src_arm_outline is not None:
-        cv2.drawContours(src_outline_mask, [src_arm_outline], -1, 255, thickness=40)  # THICK band
+        return warp_matrix
 
-    if dst_arm_outline is not None:
-        cv2.drawContours(dst_outline_mask, [dst_arm_outline], -1, 255, thickness=40)  # THICK band
-
-    # Interior features: hair (dark), freckles/moles (dark spots), texture
-    # Use Laplacian to find high-gradient regions (hair follicles, freckles)
-    src_gradient = cv2.Laplacian(src, cv2.CV_64F)
-    dst_gradient = cv2.Laplacian(dst, cv2.CV_64F)
-
-    # Threshold for strong gradients (hair, freckles, moles)
-    src_interior_features = cv2.threshold(np.abs(src_gradient).astype(np.uint8), 15, 255, cv2.THRESH_BINARY)[1]
-    dst_interior_features = cv2.threshold(np.abs(dst_gradient).astype(np.uint8), 15, 255, cv2.THRESH_BINARY)[1]
-
-    # Only keep features WITHIN the arm region (not background)
-    src_interior_features = cv2.bitwise_and(src_interior_features, src_arm_region)
-    dst_interior_features = cv2.bitwise_and(dst_interior_features, dst_arm_region)
-
-    # MORPHOLOGY MASK = ARM OUTLINE (heavy weight) + interior features (hair/freckles)
-    # The outline gets PRIORITY - it's the primary alignment feature
-    src_morphology_mask = cv2.bitwise_or(src_outline_mask, src_interior_features)
-    dst_morphology_mask = cv2.bitwise_or(dst_outline_mask, dst_interior_features)
-
-    # Dilate to create feature extraction regions
-    kernel = np.ones((5, 5), np.uint8)
-    src_morphology_mask = cv2.dilate(src_morphology_mask, kernel, iterations=1)
-    dst_morphology_mask = cv2.dilate(dst_morphology_mask, kernel, iterations=1)
-
-    # STEP 3: Extract SIFT features from ARM MORPHOLOGY (outline + hair/freckles)
-    logging.debug("Extracting SIFT features from arm-specific morphology")
-    sift = cv2.SIFT_create(nfeatures=1500)  # More features for better morphology coverage
-
-    # Extract features ONLY from arm morphology regions
-    keypoints_src, descriptors_src = sift.detectAndCompute(src, mask=src_morphology_mask)
-    keypoints_dst, descriptors_dst = sift.detectAndCompute(dst, mask=dst_morphology_mask)
-
-    if descriptors_src is None or descriptors_dst is None:
-        logging.warning("Morphology-based SIFT failed; falling back to full-arm SIFT")
-        keypoints_src, descriptors_src = sift.detectAndCompute(src, mask=src_arm_region)
-        keypoints_dst, descriptors_dst = sift.detectAndCompute(dst, mask=dst_arm_region)
-
-        if descriptors_src is None or descriptors_dst is None:
-            raise ValueError("Unable to find distinctive features for alignment")
-
-    logging.info(
-        "Found %d morphological keypoints in source, %d in destination (arm outline, hair, freckles)",
-        len(keypoints_src), len(keypoints_dst)
-    )
-
-    # STEP 4: Match morphological features between images
-    # Use strict ratio test since we're matching specific anatomical features
-    matcher = cv2.BFMatcher(cv2.NORM_L2)
-    matches = matcher.knnMatch(descriptors_src, descriptors_dst, k=2)
-
-    # Lowe's ratio test - stricter for morphology matching
-    good_matches = []
-    for match_pair in matches:
-        if len(match_pair) == 2:
-            m, n = match_pair
-            if m.distance < 0.7 * n.distance:  # Stricter for anatomical features
-                good_matches.append(m)
-
-    if not good_matches:
-        raise ValueError("Could not match morphological features between images")
-
-    logging.info("Matched %d high-quality morphological feature pairs", len(good_matches))
-
-    # Use top matches for RANSAC-based affine estimation
-    # Prioritize closest matches (most similar morphological features)
-    good_matches = sorted(good_matches, key=lambda x: x.distance)[:150]  # More matches for better fit
-    src_pts = np.float32([keypoints_src[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-    dst_pts = np.float32([keypoints_dst[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-    matrix, inliers = cv2.estimateAffinePartial2D(
-        src_pts, dst_pts, method=cv2.RANSAC, ransacReprojThreshold=3.0
-    )
-    if matrix is None:
-        raise ValueError("Affine transformation could not be estimated")
-
-    inlier_count = np.sum(inliers) if inliers is not None else 0
-    logging.info(
-        "Morphology-based registration: %d inliers from %d matches (%.1f%% consensus) using arm outline/hair/freckles",
-        inlier_count, len(good_matches), 100.0 * inlier_count / len(good_matches)
-    )
-
-    return matrix
+    except cv2.error as e:
+        logging.error("ECC registration failed: %s", e)
+        # Fallback: return identity (no transformation)
+        logging.warning("Using identity transform (no registration)")
+        return np.eye(2, 3, dtype=np.float32)
 
 
 def detect_papules_red(
@@ -1876,9 +1808,8 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     base_width, base_height = baseline.size
     logging.debug("Pre-cropped baseline image size: %s x %s", base_width, base_height)
 
-    logging.info("Registering pre-cropped follow-up images to baseline")
-    # Registration now uses pre-cropped images (forearm + margin) for cleaner SIFT matching
-    # Background noise removed while keeping enough features for robust alignment
+    logging.info("Registering pre-cropped follow-up images to baseline using entire arm morphology")
+    # ECC registration using entire arm (arm, wrist, elbow) to handle mismatched angles/lighting
     matrix_early_to_base = affine_register(early, baseline)
     matrix_late_to_base = affine_register(late, baseline)
 
@@ -1937,14 +1868,46 @@ def run_pipeline(args: argparse.Namespace) -> Path:
         len(baseline_points)
     )
 
-    logging.info("Creating annotated panels")
-    annotated_baseline = draw_boxes(baseline_cropped, baseline_points, "Day 0 (baseline)", radius=args.radius)
-    annotated_early = draw_boxes(
-        early_warped_cropped, early_points_base, "Day 1 (~24h)", radius=args.radius
-    )
-    annotated_late = draw_boxes(
-        late_warped_cropped, late_points_base, "Day 2 (~48h)", radius=args.radius
-    )
+    logging.info("Creating zoomed-in ROI panels around pathergy site")
+
+    # Calculate ROI crop around pathergy sites for zoomed comparison
+    if baseline_points:
+        # Use first detected site as ROI center
+        roi_center_x, roi_center_y = baseline_points[0]
+
+        # Estimate pixels per cm for ROI sizing
+        est_px_per_cm = 70.0
+        roi_radius_cm = 3.0  # 3cm radius = 6cm × 6cm ROI
+        roi_radius_px = int(roi_radius_cm * est_px_per_cm)
+
+        # Define ROI crop box
+        left = max(0, roi_center_x - roi_radius_px)
+        top = max(0, roi_center_y - roi_radius_px)
+        right = min(baseline_cropped.width, roi_center_x + roi_radius_px)
+        bottom = min(baseline_cropped.height, roi_center_y + roi_radius_px)
+
+        # Crop to ROI
+        baseline_roi = baseline_cropped.crop((left, top, right, bottom))
+        early_roi = early_warped_cropped.crop((left, top, right, bottom))
+        late_roi = late_warped_cropped.crop((left, top, right, bottom))
+
+        # Adjust point coordinates to ROI-relative
+        roi_baseline_points = [(x - left, y - top) for x, y in baseline_points if left <= x <= right and top <= y <= bottom]
+        roi_early_points = [(x - left, y - top) for x, y in early_points_base if left <= x <= right and top <= y <= bottom]
+        roi_late_points = [(x - left, y - top) for x, y in late_points_base if left <= x <= right and top <= y <= bottom]
+
+        # Annotate ROI crops
+        annotated_baseline = draw_boxes(baseline_roi, roi_baseline_points, "Day 0 (baseline)", radius=args.radius)
+        annotated_early = draw_boxes(early_roi, roi_early_points, "Day 1 (~24h)", radius=args.radius)
+        annotated_late = draw_boxes(late_roi, roi_late_points, "Day 2 (~48h)", radius=args.radius)
+
+        logging.info(f"ROI crops: {right-left}×{bottom-top} px around site at ({roi_center_x}, {roi_center_y})")
+    else:
+        # Fallback: use full images if no pathergy sites detected
+        logging.warning("No pathergy sites for ROI; using full images")
+        annotated_baseline = draw_boxes(baseline_cropped, baseline_points, "Day 0 (baseline)", radius=args.radius)
+        annotated_early = draw_boxes(early_warped_cropped, early_points_base, "Day 1 (~24h)", radius=args.radius)
+        annotated_late = draw_boxes(late_warped_cropped, late_points_base, "Day 2 (~48h)", radius=args.radius)
 
     panels = [annotated_baseline, annotated_early, annotated_late]
 
