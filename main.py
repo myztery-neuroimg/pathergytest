@@ -778,11 +778,6 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Logging level (default: INFO)",
     )
     parser.add_argument(
-        "--skip-dark-detection",
-        action="store_true",
-        help="Disable the late-stage dark lesion detector and reuse early detections.",
-    )
-    parser.add_argument(
         "--enable-preprocessing",
         action="store_true",
         help="Enable comprehensive pre-processing pipeline (illumination correction, bilateral filtering, color normalization).",
@@ -893,33 +888,30 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     base_width, base_height = baseline.size
     logging.debug("Baseline image size: %s x %s", base_width, base_height)
 
-    logging.info("Detecting papules")
+    logging.info("Detecting puncture sites on baseline image (Day 0)")
     baseline_points = detect_papules_red(baseline)
     if not baseline_points:
-        logging.warning("No papules detected in baseline image")
-
-    early_points = detect_papules_red(early)
-    if not early_points:
-        logging.warning("No papules detected in early follow-up image")
-    if args.skip_dark_detection:
-        logging.warning("Skipping dark lesion detector; using early detections for late image")
-        late_points = early_points
-    else:
-        late_points = detect_papules_dark(late)
-        if not late_points:
-            logging.warning("No papules detected in late follow-up image")
+        logging.warning("No puncture sites detected in baseline image")
+        logging.warning("Consider adjusting detection parameters or checking image quality")
 
     logging.info("Registering follow-up images to baseline")
     matrix_early_to_base = affine_register(early, baseline)
     matrix_late_to_base = affine_register(late, baseline)
 
-    logging.info("Warping follow-up images")
+    logging.info("Warping follow-up images to baseline coordinate frame")
     early_warped = warp_to_base(early, matrix_early_to_base, (base_width, base_height))
     late_warped = warp_to_base(late, matrix_late_to_base, (base_width, base_height))
 
-    logging.info("Transforming lesion coordinates to baseline frame")
-    early_points_base = transform_points(early_points, matrix_early_to_base)
-    late_points_base = transform_points(late_points, matrix_late_to_base)
+    logging.info("Tracking Day 0 puncture sites across all registered timepoints")
+    # Since all images are now in baseline coordinate space, we use the same
+    # anatomical locations (baseline_points) across all timepoints to track
+    # the evolution of the puncture sites
+    early_points_base = baseline_points
+    late_points_base = baseline_points
+    logging.info(
+        "Tracking %d puncture site(s) at same anatomical locations across all timepoints",
+        len(baseline_points)
+    )
 
     logging.info("Cropping images to their shared visual footprint")
     logging.info(
@@ -1001,39 +993,40 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     if args.save_morphological_overlays or args.generate_diagnostic_panels:
         logging.info("Generating morphological visualizations")
 
-        # Generate HSV mask overlays
+        # Generate HSV mask overlays (on original baseline, shows what was detected)
         baseline_hsv = visualize_hsv_mask(baseline)
-        early_hsv = visualize_hsv_mask(early)
 
-        # Generate contour overlays
+        # Generate contour overlays showing tracked puncture sites
+        # For baseline: show detection on original image
         baseline_contours = visualize_contours(baseline, baseline_points)
-        early_contours = visualize_contours(early, early_points)
+        # For warped images: show the same anatomical locations being tracked
+        early_contours = visualize_contours(early_warped, early_points_base)
+        late_contours = visualize_contours(late_warped, late_points_base)
 
-        # Generate dark detection overlay
-        late_dark = visualize_dark_detection(late, late_points)
+        # Generate SIFT visualizations - use the images that were actually registered
+        # If preprocessing enabled, show SIFT on preprocessed images; otherwise on originals
+        sift_early_src = early if args.enable_preprocessing else early_original
+        sift_late_src = late if args.enable_preprocessing else late_original
+        sift_baseline_src = baseline if args.enable_preprocessing else baseline_original
 
-        # Generate SIFT visualizations
-        early_sift, baseline_sift_early = visualize_sift_features(early_original, baseline_original)
-        late_sift, baseline_sift_late = visualize_sift_features(late_original, baseline_original)
+        early_sift, baseline_sift_early = visualize_sift_features(sift_early_src, sift_baseline_src)
+        late_sift, baseline_sift_late = visualize_sift_features(sift_late_src, sift_baseline_src)
 
         if args.save_morphological_overlays:
             logging.info("Saving individual morphological overlays")
             baseline_hsv.save(output_dir / "baseline_hsv_mask.jpg", quality=95)
-            early_hsv.save(output_dir / "early_hsv_mask.jpg", quality=95)
-            baseline_contours.save(output_dir / "baseline_contours.jpg", quality=95)
-            early_contours.save(output_dir / "early_contours.jpg", quality=95)
-            late_dark.save(output_dir / "late_dark_detection.jpg", quality=95)
+            baseline_contours.save(output_dir / "baseline_contours_detected.jpg", quality=95)
+            early_contours.save(output_dir / "early_tracked_sites.jpg", quality=95)
+            late_contours.save(output_dir / "late_tracked_sites.jpg", quality=95)
             early_sift.save(output_dir / "early_sift_features.jpg", quality=95)
-            baseline_sift_early.save(output_dir / "baseline_sift_features_early.jpg", quality=95)
             late_sift.save(output_dir / "late_sift_features.jpg", quality=95)
-            baseline_sift_late.save(output_dir / "baseline_sift_features_late.jpg", quality=95)
             logging.info("Morphological overlays saved to %s", output_dir)
 
     # Generate diagnostic panels if requested
     if args.generate_diagnostic_panels:
         logging.info("Generating diagnostic panels")
 
-        # Baseline diagnostic panel
+        # Baseline diagnostic panel: Shows detection process
         baseline_panel = create_diagnostic_panel(
             baseline_original,
             baseline,
@@ -1045,11 +1038,11 @@ def run_pipeline(args: argparse.Namespace) -> Path:
         baseline_panel.save(baseline_panel_path, quality=95)
         logging.info("Baseline diagnostic panel saved to %s", baseline_panel_path)
 
-        # Early diagnostic panel
+        # Early diagnostic panel: Shows tracking of Day 0 sites on Day 1
         early_panel = create_diagnostic_panel(
             early_original,
-            early,
-            early_hsv,
+            early_warped,
+            early_sift,
             early_contours,
             padding=10,
         )
@@ -1057,12 +1050,12 @@ def run_pipeline(args: argparse.Namespace) -> Path:
         early_panel.save(early_panel_path, quality=95)
         logging.info("Early diagnostic panel saved to %s", early_panel_path)
 
-        # Late diagnostic panel (with dark detection instead of contours)
+        # Late diagnostic panel: Shows tracking of Day 0 sites on Day 2+
         late_panel = create_diagnostic_panel(
             late_original,
-            late,
-            visualize_hsv_mask(late),
-            late_dark,
+            late_warped,
+            late_sift,
+            late_contours,
             padding=10,
         )
         late_panel_path = output_dir / "late_diagnostic_panel.jpg"

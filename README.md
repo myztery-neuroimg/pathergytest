@@ -93,22 +93,25 @@ Requirements:
    **Other optional flags:**
    - `--radius`: Adjust the lesion bounding box size (pixels, default: 22).
    - `--padding`: Control spacing between montage panels (pixels, default: 20).
-   - `--skip-dark-detection`: Reuse early detections when late images lack contrast.
    - `--content-threshold INT`: Pixel intensity threshold for shared visual-footprint detection (default: 5).
    - `--content-kernel-size INT`: Morphological kernel size for shared visual-footprint detection (default: 7).
    - `--content-min-component-area INT`: Minimum connected component area kept during detection (default: 1000).
 
 3. Outputs:
-   - `outputs/pathergy_timeline_composite.jpg` - Main composite timeline
-   - `outputs/baseline_diagnostic_panel.jpg` - Baseline diagnostic panel (if `--generate-diagnostic-panels` is used)
-   - `outputs/early_diagnostic_panel.jpg` - Early diagnostic panel (if `--generate-diagnostic-panels` is used)
-   - `outputs/late_diagnostic_panel.jpg` - Late diagnostic panel (if `--generate-diagnostic-panels` is used)
-   - `outputs/baseline_hsv_mask.jpg` - Baseline HSV mask overlay (if `--save-morphological-overlays` is used)
-   - `outputs/early_hsv_mask.jpg` - Early HSV mask overlay (if `--save-morphological-overlays` is used)
-   - `outputs/baseline_contours.jpg` - Baseline contours visualization (if `--save-morphological-overlays` is used)
-   - `outputs/early_contours.jpg` - Early contours visualization (if `--save-morphological-overlays` is used)
-   - `outputs/late_dark_detection.jpg` - Late dark detection visualization (if `--save-morphological-overlays` is used)
-   - `outputs/*_sift_features.jpg` - SIFT feature visualizations (if `--save-morphological-overlays` is used)
+   - `outputs/pathergy_timeline_composite.jpg` - Main composite timeline showing Day 0 puncture sites tracked across all timepoints
+
+   **Diagnostic panels** (if `--generate-diagnostic-panels` is used):
+   - `outputs/baseline_diagnostic_panel.jpg` - Baseline detection process (original, preprocessed, HSV mask, detected sites)
+   - `outputs/early_diagnostic_panel.jpg` - Day 1 tracking (original, warped, SIFT features, tracked sites)
+   - `outputs/late_diagnostic_panel.jpg` - Day 2+ tracking (original, warped, SIFT features, tracked sites)
+
+   **Morphological overlays** (if `--save-morphological-overlays` is used):
+   - `outputs/baseline_hsv_mask.jpg` - HSV-based red detection mask on baseline
+   - `outputs/baseline_contours_detected.jpg` - Detected puncture sites on Day 0
+   - `outputs/early_tracked_sites.jpg` - Day 0 sites tracked to Day 1 image
+   - `outputs/late_tracked_sites.jpg` - Day 0 sites tracked to Day 2+ image
+   - `outputs/early_sift_features.jpg` - SIFT keypoints used for Day 1 alignment
+   - `outputs/late_sift_features.jpg` - SIFT keypoints used for Day 2+ alignment
 
 Each overlay marks the same papule pair aligned to the Day-1 contour, showing their evolution over time. Logging provides traceability for each processing stage.
 
@@ -122,9 +125,10 @@ Pre-processing (optional):
 - **Color normalization**: Normalizes color channels to improve consistency across images taken under different lighting.
 - **Unsharp masking**: Edge enhancement technique to improve feature detection and alignment.
 
-Detection:
-- **Early (Day 0-1)**: HSV-based red hue segmentation to detect inflammatory papules.
-- **Late (Day 2)**: CLAHE-enhanced gray thresholding with morphological operations for detecting brown macules with circularity and distance constraints.
+Puncture Site Detection and Tracking:
+- **Day 0 (Baseline)**: HSV-based red hue segmentation to detect puncture sites (typically showing initial inflammation).
+- **Day 1-5+ (Follow-up)**: The same anatomical locations are tracked across all registered images. The pipeline does NOT perform independent detection on follow-up images; instead, it geometrically maps the Day 0 puncture coordinates to the same locations on the arm in subsequent timepoints through affine registration.
+- This approach ensures we track the evolution of the SAME puncture sites over time, not different spots detected independently on each image.
 
 Registration:
 - **SIFT feature matching**: Scale-Invariant Feature Transform to detect distinctive keypoints.
