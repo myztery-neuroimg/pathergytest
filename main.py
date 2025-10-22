@@ -693,18 +693,17 @@ def common_content_bbox(
 
     logger = logging.getLogger(__name__)
 
-    # Ensure all images have the same size for mask intersection
+    # Verify all images have the same size (they should after warping and cropping)
     sizes = [img.size for img in images]
     if len(set(sizes)) > 1:
-        logger.warning(
-            "Images have different sizes: %s. Resizing all to match first image.",
+        logger.error(
+            "CRITICAL: Images have different sizes: %s. This indicates a bug in warping/cropping!",
             sizes
         )
-        target_size = sizes[0]
-        images = [
-            img if img.size == target_size else img.resize(target_size, Image.Resampling.LANCZOS)
-            for img in images
-        ]
+        raise ValueError(
+            f"Images must have the same size for mask intersection. Got sizes: {sizes}. "
+            "This suggests the warping or cropping step failed to produce aligned images."
+        )
 
     refined_masks = []
     for idx, image in enumerate(images, start=1):
@@ -726,17 +725,6 @@ def common_content_bbox(
             )
         else:
             logger.debug("Content mask %d retains no components", idx)
-
-    # Ensure all masks are the same shape for bitwise_and
-    mask_shapes = [mask.shape for mask in refined_masks]
-    if len(set(mask_shapes)) > 1:
-        logger.warning(
-            "Masks have different shapes: %s. Using minimum common dimensions.",
-            mask_shapes
-        )
-        min_height = min(shape[0] for shape in mask_shapes)
-        min_width = min(shape[1] for shape in mask_shapes)
-        refined_masks = [mask[:min_height, :min_width] for mask in refined_masks]
 
     intersection = refined_masks[0]
     for mask in refined_masks[1:]:
@@ -1102,10 +1090,10 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     logging.info("Creating annotated panels")
     annotated_baseline = draw_boxes(baseline_cropped, baseline_points, "Day 0 (baseline)", radius=args.radius)
     annotated_early = draw_boxes(
-        early_warped, early_points_base, "Day 1 (~24h)", radius=args.radius
+        early_warped_cropped, early_points_base, "Day 1 (~24h)", radius=args.radius
     )
     annotated_late = draw_boxes(
-        late_warped, late_points_base, "Day 2 (~48h)", radius=args.radius
+        late_warped_cropped, late_points_base, "Day 2 (~48h)", radius=args.radius
     )
 
     panels = [annotated_baseline, annotated_early, annotated_late]
