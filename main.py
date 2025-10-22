@@ -562,21 +562,130 @@ def preprocess_image(
         raise ValueError(f"Image pre-processing failed: {exc}") from exc
 
 
-def affine_register(src_pil: Image.Image, dst_pil: Image.Image) -> np.ndarray:
-    """Estimate an affine transform aligning ``src`` → ``dst`` using ECC (Enhanced Correlation Coefficient).
+def affine_register(
+    src_pil: Image.Image,
+    dst_pil: Image.Image,
+    src_timepoint: Optional[str] = None,
+    landmarks_path: Optional[Path] = None,
+    src_crop_offset: Optional[Tuple[int, int]] = None,
+    dst_crop_offset: Optional[Tuple[int, int]] = None
+) -> np.ndarray:
+    """Estimate an affine transform aligning ``src`` → ``dst`` using VLM-extracted landmarks.
 
-    Uses intensity-based image alignment via ECC criterion on the entire arm morphology
-    (arm, wrist, elbow). This is more robust than feature-based methods for medical images
-    with mismatched colors, angles, and lighting.
+    Uses corresponding anatomical landmarks (marker, vein, freckle, arm_edge) extracted by
+    a vision language model (gemma3:27b) to compute a robust affine transform. This handles
+    different arm angles, poses, and lighting conditions much better than pixel-based methods.
 
     Args:
         src_pil: Source image to transform
-        dst_pil: Destination (reference) image
+        dst_pil: Destination (reference) image (baseline/day0)
+        src_timepoint: Source timepoint ('day1' or 'day2'). If None, attempts ECC fallback.
+        landmarks_path: Path to landmarks JSON file. Defaults to 'landmarks.json' in current directory.
+        src_crop_offset: (left, top) offset if source was pre-cropped from original
+        dst_crop_offset: (left, top) offset if destination was pre-cropped from original
 
     Returns:
         2x3 affine transformation matrix
     """
 
+    # Try landmark-based registration if timepoint specified
+    if src_timepoint is not None:
+        try:
+            import json
+
+            # Default to landmarks.json in current directory
+            if landmarks_path is None:
+                landmarks_file = Path("landmarks.json")
+            else:
+                landmarks_file = Path(landmarks_path)
+
+            if not landmarks_file.exists():
+                logging.warning(
+                    "Landmarks file not found at %s, falling back to ECC registration",
+                    landmarks_path
+                )
+            else:
+                logging.info(
+                    "Computing landmark-based affine registration (%s → day0)",
+                    src_timepoint
+                )
+
+                # Load landmarks
+                with open(landmarks_file, 'r') as f:
+                    landmarks = json.load(f)
+
+                # Get corresponding points
+                src_landmarks = landmarks[src_timepoint]
+                dst_landmarks = landmarks['day0']
+
+                # Convert to numpy arrays and adjust for pre-crop offsets
+                src_points = []
+                dst_points = []
+                for feature in ['marker', 'vein', 'freckle', 'arm_edge']:
+                    if feature in src_landmarks and feature in dst_landmarks:
+                        src_pt = list(src_landmarks[feature])
+                        dst_pt = list(dst_landmarks[feature])
+
+                        # Adjust coordinates if images were pre-cropped
+                        if src_crop_offset is not None:
+                            src_pt[0] -= src_crop_offset[0]  # x - left
+                            src_pt[1] -= src_crop_offset[1]  # y - top
+
+                        if dst_crop_offset is not None:
+                            dst_pt[0] -= dst_crop_offset[0]  # x - left
+                            dst_pt[1] -= dst_crop_offset[1]  # y - top
+
+                        src_points.append(src_pt)
+                        dst_points.append(dst_pt)
+
+                src_points = np.array(src_points, dtype=np.float32)
+                dst_points = np.array(dst_points, dtype=np.float32)
+
+                logging.debug(
+                    "Adjusted landmarks for pre-crop: src_offset=%s, dst_offset=%s",
+                    src_crop_offset, dst_crop_offset
+                )
+
+                if len(src_points) < 3:
+                    logging.error(
+                        "Insufficient landmarks found: %d (need at least 3)",
+                        len(src_points)
+                    )
+                else:
+                    # Use first 3 points for affine transform
+                    warp_matrix = cv2.getAffineTransform(src_points[:3], dst_points[:3])
+
+                    # Compute alignment quality metrics
+                    alignment_errors = []
+                    for src_pt, dst_pt in zip(src_points, dst_points):
+                        error = np.linalg.norm(src_pt - dst_pt)
+                        alignment_errors.append(error)
+
+                    logging.info(
+                        "Landmark registration complete: %d points, mean error=%.2f px, max error=%.2f px",
+                        len(src_points),
+                        np.mean(alignment_errors),
+                        np.max(alignment_errors)
+                    )
+
+                    # Decompose transform for logging
+                    angle = np.arctan2(warp_matrix[1, 0], warp_matrix[0, 0]) * 180 / np.pi
+                    scale_x = np.sqrt(warp_matrix[0, 0]**2 + warp_matrix[1, 0]**2)
+                    scale_y = np.sqrt(warp_matrix[0, 1]**2 + warp_matrix[1, 1]**2)
+                    tx, ty = warp_matrix[0, 2], warp_matrix[1, 2]
+
+                    logging.debug(
+                        "Transform: rotation=%.2f°, scale=(%.3f, %.3f), translation=(%.1f, %.1f)px",
+                        angle, scale_x, scale_y, tx, ty
+                    )
+
+                    return warp_matrix
+
+        except Exception as e:
+            logging.error("Landmark-based registration failed: %s", e)
+            logging.warning("Falling back to ECC registration")
+
+    # Fallback to ECC registration if landmarks not available
     logging.info("Computing ECC registration using entire arm morphology (arm, wrist, elbow)")
     src = cv2.cvtColor(np.array(src_pil), cv2.COLOR_RGB2GRAY)
     dst = cv2.cvtColor(np.array(dst_pil), cv2.COLOR_RGB2GRAY)
@@ -1808,14 +1917,37 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     base_width, base_height = baseline.size
     logging.debug("Pre-cropped baseline image size: %s x %s", base_width, base_height)
 
-    logging.info("Registering pre-cropped follow-up images to baseline using entire arm morphology")
-    # ECC registration using entire arm (arm, wrist, elbow) to handle mismatched angles/lighting
-    matrix_early_to_base = affine_register(early, baseline)
-    matrix_late_to_base = affine_register(late, baseline)
+    logging.info("Registering pre-cropped follow-up images to baseline using VLM landmarks")
+    # Landmark-based registration using VLM-extracted anatomical correspondences
+    # This handles mismatched arm angles, poses, and lighting conditions
+    # Pass crop offsets to adjust VLM landmark coordinates (from original images)
+    baseline_offset = (baseline_bbox[0], baseline_bbox[1])  # (left, top)
+    early_offset = (early_bbox[0], early_bbox[1])
+    late_offset = (late_bbox[0], late_bbox[1])
+
+    matrix_early_to_base = affine_register(
+        early, baseline,
+        src_timepoint='day1',
+        src_crop_offset=early_offset,
+        dst_crop_offset=baseline_offset
+    )
+    matrix_late_to_base = affine_register(
+        late, baseline,
+        src_timepoint='day2',
+        src_crop_offset=late_offset,
+        dst_crop_offset=baseline_offset
+    )
 
     logging.info("Warping follow-up images to baseline coordinate frame")
     early_warped = warp_to_base(early, matrix_early_to_base, (base_width, base_height))
     late_warped = warp_to_base(late, matrix_late_to_base, (base_width, base_height))
+
+    # Save intermediate warped images for debugging
+    if args.save_morphological_overlays:
+        logging.debug("Saving intermediate warped images")
+        early_warped.save(output_dir / "intermediate_early_warped.jpg", quality=95)
+        late_warped.save(output_dir / "intermediate_late_warped.jpg", quality=95)
+        logging.info("Saved warped images to %s", output_dir)
 
     logging.info("Identifying shared anatomical region across all ALIGNED images")
     logging.info(
@@ -1867,6 +1999,21 @@ def run_pipeline(args: argparse.Namespace) -> Path:
         "Tracking %d puncture site(s) at same anatomical locations using geomorphic alignment",
         len(baseline_points)
     )
+
+    # Save diagnostic images showing tracked sites on registered images
+    if args.save_morphological_overlays and baseline_points:
+        logging.debug("Saving diagnostic images with tracked puncture sites")
+
+        # Draw boxes on registered images at the SAME coordinates
+        baseline_with_boxes = draw_boxes(baseline_cropped, baseline_points, "Baseline Sites", radius=args.radius)
+        early_with_boxes = draw_boxes(early_warped_cropped, early_points_base, "Tracked Sites (Day 1)", radius=args.radius)
+        late_with_boxes = draw_boxes(late_warped_cropped, late_points_base, "Tracked Sites (Day 2)", radius=args.radius)
+
+        baseline_with_boxes.save(output_dir / "baseline_tracked_sites.jpg", quality=95)
+        early_with_boxes.save(output_dir / "early_tracked_sites.jpg", quality=95)
+        late_with_boxes.save(output_dir / "late_tracked_sites.jpg", quality=95)
+
+        logging.info("Saved diagnostic tracked sites images to %s", output_dir)
 
     logging.info("Creating zoomed-in ROI panels around pathergy site")
 
