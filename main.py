@@ -203,6 +203,175 @@ def detect_arm_orientation(pil_img: Image.Image) -> float:
     return float(angle)
 
 
+def compute_local_arm_orientation(pil_img: Image.Image, center_point: Coordinate, radius: int = 100) -> float:
+    """Compute local arm orientation at a specific location.
+
+    Uses PCA on skin pixels within a local region around the test site,
+    rather than global arm orientation. This accounts for arm curvature.
+
+    Args:
+        pil_img: Input image
+        center_point: (x, y) center of local region
+        radius: Radius of local region to analyze (pixels)
+
+    Returns:
+        Local arm orientation angle in degrees (0-180 from horizontal)
+    """
+
+    logging.debug("Computing local arm orientation at (%d, %d)", center_point[0], center_point[1])
+    skin_mask = segment_skin_region(pil_img)
+
+    height, width = skin_mask.shape
+    cx, cy = center_point
+
+    # Define local region
+    x_min = max(0, cx - radius)
+    x_max = min(width, cx + radius)
+    y_min = max(0, cy - radius)
+    y_max = min(height, cy + radius)
+
+    # Extract local skin mask
+    local_mask = skin_mask[y_min:y_max, x_min:x_max]
+
+    # Get local coordinates
+    ys, xs = np.nonzero(local_mask)
+    if len(xs) < 10:
+        logging.warning("Insufficient local skin pixels; using global orientation")
+        return detect_arm_orientation(pil_img)
+
+    # Convert to global coordinates
+    coords = np.column_stack([xs + x_min, ys + y_min])
+
+    # Compute PCA
+    mean = np.mean(coords, axis=0)
+    centered = coords - mean
+    cov = np.cov(centered.T)
+    eigenvalues, eigenvectors = np.linalg.eig(cov)
+
+    principal_idx = np.argmax(eigenvalues)
+    principal_axis = eigenvectors[:, principal_idx].real
+
+    angle = np.arctan2(principal_axis[1], principal_axis[0]) * 180 / np.pi
+    if angle < 0:
+        angle += 180
+
+    logging.debug("Local arm orientation at test site: %.1f°", angle)
+    return float(angle)
+
+
+def estimate_arm_width_px(pil_img: Image.Image, center_y: int | None = None) -> float:
+    """Estimate forearm width in pixels at a given vertical position.
+
+    Used for scale calibration. Typical forearm width is 6-8 cm.
+
+    Args:
+        pil_img: Input image
+        center_y: Y-coordinate to measure width at (defaults to center)
+
+    Returns:
+        Estimated arm width in pixels
+    """
+
+    logging.debug("Estimating arm width for scale calibration")
+    skin_mask = segment_skin_region(pil_img)
+    height, width = skin_mask.shape
+
+    if center_y is None:
+        center_y = height // 2
+
+    # Sample a band around center_y
+    band_height = 20
+    y_min = max(0, center_y - band_height // 2)
+    y_max = min(height, center_y + band_height // 2)
+
+    band = skin_mask[y_min:y_max, :]
+
+    # For each row, find the width of skin
+    widths = []
+    for row in band:
+        xs = np.nonzero(row)[0]
+        if len(xs) > 0:
+            widths.append(xs.max() - xs.min())
+
+    if not widths:
+        logging.warning("Could not estimate arm width; using default")
+        return 200.0  # Fallback
+
+    arm_width_px = np.median(widths)
+    logging.info("Estimated arm width: %.1f pixels", arm_width_px)
+    return float(arm_width_px)
+
+
+def detect_markers(pil_img: Image.Image) -> Tuple[List[Coordinate], Coordinate | None]:
+    """Detect + and - markers drawn by physician.
+
+    Markers are typically larger than injection sites and may be darker/pen ink.
+    Returns marker positions and the centroid of the marker region.
+
+    Args:
+        pil_img: Input image
+
+    Returns:
+        Tuple of (marker_positions, marker_centroid)
+        marker_centroid is the center point where markers are located
+    """
+
+    logging.debug("Detecting + and - markers")
+    bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+    markers = []
+
+    # Try detecting dark markers (pen ink)
+    # Pen marks are typically very dark (low V in HSV, low grayscale)
+    _, dark_mask = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY_INV)
+    dark_mask = cv2.medianBlur(dark_mask, 5)
+
+    # Try detecting red markers
+    red_mask = cv2.inRange(hsv, (0, 60, 60), (12, 255, 255)) | cv2.inRange(
+        hsv, (170, 60, 60), (180, 255, 255)
+    )
+    red_mask = cv2.medianBlur(red_mask, 3)
+
+    # Combine both masks
+    combined_mask = cv2.bitwise_or(dark_mask, red_mask)
+
+    contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Look for larger regions that could be markers
+    # Markers are typically larger than injection sites (500+ pixels)
+    marker_candidates = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area > 500:  # Larger than injection sites
+            moments = cv2.moments(contour)
+            if moments["m00"]:
+                cx = int(moments["m10"] / moments["m00"])
+                cy = int(moments["m01"] / moments["m00"])
+                marker_candidates.append((cx, cy, area))
+
+    if marker_candidates:
+        logging.info("Found %d potential marker regions", len(marker_candidates))
+        # Sort by area (largest first)
+        marker_candidates.sort(key=lambda t: t[2], reverse=True)
+        markers = [(x, y) for x, y, _ in marker_candidates]
+
+        # Compute centroid of marker region
+        if len(markers) >= 2:
+            centroid_x = int(np.mean([x for x, y in markers[:2]]))
+            centroid_y = int(np.mean([y for x, y in markers[:2]]))
+            marker_centroid = (centroid_x, centroid_y)
+        else:
+            marker_centroid = markers[0]
+
+        logging.info("Marker region centroid: (%d, %d)", marker_centroid[0], marker_centroid[1])
+        return markers, marker_centroid
+    else:
+        logging.warning("No markers detected")
+        return [], None
+
+
 def illumination_correction(pil_img: Image.Image, clip_limit: float = 2.0) -> Image.Image:
     """Apply illumination correction using LAB color space and CLAHE on L channel."""
 
@@ -396,48 +565,77 @@ def detect_papules_red(
     *,
     min_area: int = 30,
     max_area: int = 500,
-    min_distance_px: int = 20,
-    max_distance_px: int = 150,
-    arm_angle: float | None = None
 ) -> List[Coordinate]:
     """Detect TWO injection sites arranged lengthwise along the arm axis.
 
-    Pathergy test protocol requires two puncture sites arranged along the arm's
-    long axis (typically 2-3 cm apart lengthwise), adjacent to +/- marker symbols.
-    This function finds the best pair that matches this clinical protocol.
+    Uses geomorphological scale calibration and marker detection to:
+    1. Detect +/- markers to establish test site location
+    2. Calculate pixel-to-cm scale from arm width (typical forearm: 6-8 cm)
+    3. Compute local arm orientation at the marker location
+    4. Search for injection sites near markers at expected spacing (2-3 cm real-world)
+    5. Verify sites are parallel to local arm axis at that location
 
     Args:
         pil_img: Input image
         min_area: Minimum area for a valid injection site (pixels)
         max_area: Maximum area for a valid injection site (pixels)
-        min_distance_px: Minimum distance between two injection sites (pixels)
-        max_distance_px: Maximum distance between two injection sites (pixels)
-        arm_angle: Orientation angle of arm's long axis in degrees (0-180)
-                   If None, will be auto-detected
 
     Returns:
         List of two (x, y) coordinates for injection sites, or empty list if not found
     """
 
-    logging.debug("Detecting two injection sites arranged lengthwise along arm")
+    logging.info("Detecting injection sites using geomorphological scale calibration")
 
-    # Auto-detect arm orientation if not provided
-    if arm_angle is None:
-        arm_angle = detect_arm_orientation(pil_img)
-        logging.debug("Auto-detected arm orientation for injection site detection: %.1f°", arm_angle)
+    # Step 1: Detect markers to establish test site location
+    markers, marker_centroid = detect_markers(pil_img)
 
+    if marker_centroid is None:
+        logging.warning("No markers detected; using global approach")
+        # Fallback to image center
+        height, width = np.array(pil_img).shape[:2]
+        marker_centroid = (width // 2, height // 2)
+
+    # Step 2: Establish scale using arm width
+    # Typical forearm width is 6-8 cm, we'll use 7 cm as median
+    arm_width_px = estimate_arm_width_px(pil_img, center_y=marker_centroid[1])
+    assumed_arm_width_cm = 7.0  # Typical forearm width in cm
+    pixels_per_cm = arm_width_px / assumed_arm_width_cm
+
+    logging.info(
+        "Scale calibration: %.1f px / cm (arm width: %.1f px ≈ %.1f cm)",
+        pixels_per_cm, arm_width_px, assumed_arm_width_cm
+    )
+
+    # Step 3: Convert real-world pathergy test spacing to pixels
+    # Standard protocol: injection sites 2-3 cm apart
+    min_distance_cm = 2.0
+    max_distance_cm = 3.0
+    min_distance_px = int(min_distance_cm * pixels_per_cm)
+    max_distance_px = int(max_distance_cm * pixels_per_cm)
+
+    logging.info(
+        "Injection site spacing: %.1f-%.1f cm → %d-%d pixels",
+        min_distance_cm, max_distance_cm, min_distance_px, max_distance_px
+    )
+
+    # Step 4: Compute LOCAL arm orientation at marker location
+    # This accounts for arm curvature - orientation at test site, not global
+    local_arm_angle = compute_local_arm_orientation(pil_img, marker_centroid, radius=150)
+
+    # Step 5: Detect red regions (injection sites, excluding large markers)
     bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
-    # Detect red regions (injection sites and +/- markers)
     mask = cv2.inRange(hsv, (0, 60, 60), (12, 255, 255)) | cv2.inRange(
         hsv, (170, 60, 60), (180, 255, 255)
     )
     mask = cv2.medianBlur(mask, 3)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Extract all potential injection sites with their properties
+    # Extract potential injection sites (filter by size and proximity to markers)
     candidates: List[Tuple[int, int, float, float]] = []
+    search_radius_px = int(5.0 * pixels_per_cm)  # Search within 5 cm of markers
+
     for contour in contours:
         area = cv2.contourArea(contour)
         if min_area <= area <= max_area:  # Filter by size (excludes large markers)
@@ -446,6 +644,11 @@ def detect_papules_red(
                 cx = int(moments["m10"] / moments["m00"])
                 cy = int(moments["m01"] / moments["m00"])
 
+                # Check proximity to marker region
+                dist_to_markers = math.hypot(cx - marker_centroid[0], cy - marker_centroid[1])
+                if dist_to_markers > search_radius_px:
+                    continue  # Too far from markers
+
                 # Calculate circularity (injection sites should be roughly circular)
                 perimeter = cv2.arcLength(contour, True)
                 circularity = (4 * math.pi * area) / (perimeter * perimeter + 1e-6)
@@ -453,14 +656,18 @@ def detect_papules_red(
                 candidates.append((cx, cy, area, circularity))
 
     if len(candidates) < 2:
-        logging.warning("Found fewer than 2 injection site candidates")
+        logging.warning("Found fewer than 2 injection site candidates near markers")
         return [(x, y) for x, y, _, _ in candidates]
 
-    logging.debug("Found %d injection site candidates; finding best lengthwise pair", len(candidates))
+    logging.debug(
+        "Found %d injection site candidates within %.1f cm of markers",
+        len(candidates), search_radius_px / pixels_per_cm
+    )
 
-    # Find the best pair: two sites arranged along arm axis with similar properties
+    # Step 6: Find best pair aligned LENGTHWISE with local arm axis at test site
     best_pair = None
     best_score = float('inf')
+    best_alignment = 0.0
 
     for i, (x1, y1, area1, circ1) in enumerate(candidates):
         for j, (x2, y2, area2, circ2) in enumerate(candidates[i + 1:], start=i + 1):
@@ -473,18 +680,19 @@ def detect_papules_red(
                 if pair_angle < 0:
                     pair_angle += 180
 
-                # Angular difference from arm's long axis
-                # We want sites arranged ALONG the arm (parallel to arm axis)
+                # Angular difference from LOCAL arm axis at test site
+                # We want sites arranged PARALLEL to arm at marker location
                 angle_diff = min(
-                    abs(pair_angle - arm_angle),
-                    abs(pair_angle - arm_angle + 180),
-                    abs(pair_angle - arm_angle - 180)
+                    abs(pair_angle - local_arm_angle),
+                    abs(pair_angle - local_arm_angle + 180),
+                    abs(pair_angle - local_arm_angle - 180)
                 )
 
                 # Score components (all lower is better):
-                # 1. Distance from ideal spacing
-                target_distance = (min_distance_px + max_distance_px) / 2
-                distance_score = abs(distance - target_distance)
+                # 1. Distance from ideal spacing (2.5 cm center of range)
+                ideal_distance_cm = 2.5
+                ideal_distance_px = ideal_distance_cm * pixels_per_cm
+                distance_score = abs(distance - ideal_distance_px)
 
                 # 2. Size similarity (both sites should be similar size)
                 size_diff = abs(area1 - area2) / max(area1, area2)
@@ -492,17 +700,17 @@ def detect_papules_red(
                 # 3. Circularity (both should be circular)
                 circ_score = 2.0 - (circ1 + circ2)
 
-                # 4. Alignment with arm axis (CRITICAL for pathergy protocol)
-                # Heavily penalize perpendicular arrangements
+                # 4. Alignment with LOCAL arm axis (CRITICAL - must be parallel)
+                # Heavy penalty for perpendicular arrangements
                 alignment_score = angle_diff
 
                 # Combined score (lower is better)
-                # Weight alignment heavily since pathergy sites MUST be lengthwise
+                # Weight alignment most heavily - sites MUST be lengthwise
                 score = (
                     distance_score +
                     (size_diff * 50) +
                     (circ_score * 100) +
-                    (alignment_score * 3.0)  # 3x weight for alignment
+                    (alignment_score * 5.0)  # 5x weight for parallelism
                 )
 
                 if score < best_score:
@@ -511,9 +719,16 @@ def detect_papules_red(
                     best_alignment = angle_diff
 
     if best_pair:
+        pair_distance_px = math.hypot(
+            best_pair[1][0] - best_pair[0][0],
+            best_pair[1][1] - best_pair[0][1]
+        )
+        pair_distance_cm = pair_distance_px / pixels_per_cm
+
         logging.info(
-            "Found lengthwise injection site pair - score: %.2f, alignment: %.1f° from arm axis",
-            best_score, best_alignment
+            "Found injection site pair: distance=%.2f cm (%.1f px), "
+            "alignment=%.1f° from local arm axis, score=%.2f",
+            pair_distance_cm, pair_distance_px, best_alignment, best_score
         )
         # Sort by position along arm axis for consistent ordering
         return sorted(best_pair, key=lambda p: p[0])
@@ -741,6 +956,94 @@ def visualize_arm_orientation(pil_img: Image.Image) -> Image.Image:
     cv2.putText(
         result, f"Arm axis: {angle:.1f}deg",
         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
+    )
+
+    return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+
+
+def visualize_scale_calibration(pil_img: Image.Image) -> Image.Image:
+    """Create visualization showing scale calibration and marker detection.
+
+    Shows:
+    - Detected +/- markers
+    - Arm width measurement
+    - Calculated scale (pixels per cm)
+    - Local arm axis at test site
+    """
+
+    logging.debug("Creating scale calibration visualization")
+    bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    result = bgr.copy()
+
+    # Detect markers
+    markers, marker_centroid = detect_markers(pil_img)
+
+    if marker_centroid is None:
+        height, width = bgr.shape[:2]
+        marker_centroid = (width // 2, height // 2)
+
+    # Draw markers if detected
+    for i, (mx, my) in enumerate(markers[:5], start=1):  # Show up to 5 markers
+        cv2.circle(result, (mx, my), 10, (255, 0, 255), 2)  # Magenta circles
+        cv2.putText(
+            result, f"M{i}",
+            (mx + 15, my), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2
+        )
+
+    # Draw marker centroid
+    if marker_centroid:
+        cv2.circle(result, marker_centroid, 15, (0, 255, 255), 3)  # Cyan for centroid
+        cv2.putText(
+            result, "Test site",
+            (marker_centroid[0] + 20, marker_centroid[1] - 20),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2
+        )
+
+    # Measure and draw arm width
+    arm_width_px = estimate_arm_width_px(pil_img, center_y=marker_centroid[1])
+    assumed_arm_width_cm = 7.0
+    pixels_per_cm = arm_width_px / assumed_arm_width_cm
+
+    # Draw arm width measurement line
+    skin_mask = segment_skin_region(pil_img)
+    cy = marker_centroid[1]
+    row = skin_mask[cy, :]
+    xs = np.nonzero(row)[0]
+    if len(xs) > 0:
+        x_left, x_right = xs.min(), xs.max()
+        cv2.line(result, (x_left, cy), (x_right, cy), (0, 255, 0), 2)
+        cv2.circle(result, (x_left, cy), 5, (0, 255, 0), -1)
+        cv2.circle(result, (x_right, cy), 5, (0, 255, 0), -1)
+
+        # Add width label
+        mid_x = (x_left + x_right) // 2
+        cv2.putText(
+            result, f"{arm_width_px:.0f}px ≈ {assumed_arm_width_cm}cm",
+            (mid_x - 80, cy - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2
+        )
+
+    # Draw local arm axis at test site
+    local_angle = compute_local_arm_orientation(pil_img, marker_centroid, radius=150)
+    axis_length = 100
+
+    angle_rad = (local_angle * np.pi / 180)
+    dx = np.cos(angle_rad) * axis_length
+    dy = np.sin(angle_rad) * axis_length
+
+    pt1 = (int(marker_centroid[0] - dx), int(marker_centroid[1] - dy))
+    pt2 = (int(marker_centroid[0] + dx), int(marker_centroid[1] + dy))
+
+    cv2.line(result, pt1, pt2, (255, 255, 0), 2)  # Yellow line for local axis
+
+    # Add scale info
+    y_offset = 30
+    cv2.putText(
+        result, f"Scale: {pixels_per_cm:.1f} px/cm",
+        (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2
+    )
+    cv2.putText(
+        result, f"Local axis: {local_angle:.1f}deg",
+        (10, y_offset + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2
     )
 
     return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
@@ -1428,6 +1731,7 @@ def run_pipeline(args: argparse.Namespace) -> Path:
         # Generate structural feature visualizations
         baseline_edges = visualize_structural_edges(baseline)
         baseline_arm_axis = visualize_arm_orientation(baseline)
+        baseline_scale = visualize_scale_calibration(baseline_cropped)
 
         # Generate contour overlays showing tracked puncture sites
         # For baseline: show detection on original image
@@ -1450,6 +1754,7 @@ def run_pipeline(args: argparse.Namespace) -> Path:
             baseline_hsv.save(output_dir / "baseline_hsv_mask.jpg", quality=95)
             baseline_edges.save(output_dir / "baseline_structural_edges.jpg", quality=95)
             baseline_arm_axis.save(output_dir / "baseline_arm_orientation.jpg", quality=95)
+            baseline_scale.save(output_dir / "baseline_scale_calibration.jpg", quality=95)
             baseline_contours.save(output_dir / "baseline_contours_detected.jpg", quality=95)
             early_contours.save(output_dir / "early_tracked_sites.jpg", quality=95)
             late_contours.save(output_dir / "late_tracked_sites.jpg", quality=95)
@@ -1461,10 +1766,10 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     if args.generate_diagnostic_panels:
         logging.info("Generating diagnostic panels")
 
-        # Baseline diagnostic panel: Shows arm orientation and detection process
+        # Baseline diagnostic panel: Shows scale calibration and detection process
         baseline_panel = create_diagnostic_panel(
             baseline_original,
-            baseline_arm_axis,
+            baseline_scale,
             baseline_hsv,
             baseline_contours,
             padding=10,
