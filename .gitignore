@@ -2,7 +2,12 @@
 *.png
 .git
 .venv
-<<<<<<< HEAD
 __pycache__/
 *.pyc
 .DS_Store
+
+# Secret keys and sensitive data
+.webui_secret_key
+*.key
+*.secret
+*_secret_key
