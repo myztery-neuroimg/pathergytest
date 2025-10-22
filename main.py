@@ -13,6 +13,8 @@ from typing import Iterable, List, Sequence, Tuple
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw
+from scipy import ndimage
+from skimage import morphology, measure
 
 Coordinate = Tuple[int, int]
 
@@ -36,6 +38,121 @@ def load_image(path: Path) -> Image.Image:
         raise FileNotFoundError(f"Input image not found: {path}") from exc
     except OSError as exc:  # pragma: no cover - defensive
         raise OSError(f"Unable to open image '{path}': {exc}") from exc
+
+
+def segment_skin_region(pil_img: Image.Image) -> np.ndarray:
+    """Segment skin region using multi-color-space approach.
+
+    Uses HSV and YCrCb color spaces to robustly detect skin regardless of lighting.
+    Returns a binary mask where skin pixels are True.
+    """
+
+    logging.debug("Segmenting skin region")
+    bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+    # HSV color space - good for hue-based skin detection
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    # Skin hue typically in range 0-50 in H channel
+    lower_hsv = np.array([0, 20, 50], dtype=np.uint8)
+    upper_hsv = np.array([50, 255, 255], dtype=np.uint8)
+    mask_hsv = cv2.inRange(hsv, lower_hsv, upper_hsv)
+
+    # YCrCb color space - robust to illumination changes
+    ycrcb = cv2.cvtColor(bgr, cv2.COLOR_BGR2YCrCb)
+    # Skin typically has Cr: 133-173, Cb: 77-127
+    lower_ycrcb = np.array([0, 133, 77], dtype=np.uint8)
+    upper_ycrcb = np.array([255, 173, 127], dtype=np.uint8)
+    mask_ycrcb = cv2.inRange(ycrcb, lower_ycrcb, upper_ycrcb)
+
+    # Combine both masks (AND operation for high confidence)
+    skin_mask = cv2.bitwise_and(mask_hsv, mask_ycrcb)
+
+    # Morphological operations to clean up noise
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+    skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    # Remove small components
+    skin_mask = morphology.remove_small_objects(skin_mask.astype(bool), min_size=500)
+
+    return skin_mask
+
+
+def find_forearm_bbox(pil_img: Image.Image, margin_percent: float = 0.15) -> Tuple[int, int, int, int] | None:
+    """Find bounding box of the forearm region with safety margin for registration.
+
+    Args:
+        pil_img: Input image
+        margin_percent: Safety margin as percentage of bbox dimensions (default 15%)
+
+    Returns:
+        (left, top, right, bottom) bounding box, or None if no forearm found
+    """
+
+    logging.debug("Finding forearm bounding box")
+
+    # Segment skin
+    skin_mask = segment_skin_region(pil_img)
+
+    if not np.any(skin_mask):
+        logging.warning("No skin region detected")
+        return None
+
+    # Label connected components
+    labeled = measure.label(skin_mask)
+    regions = measure.regionprops(labeled)
+
+    if not regions:
+        logging.warning("No connected skin regions found")
+        return None
+
+    # Find the largest region (likely the forearm)
+    largest_region = max(regions, key=lambda r: r.area)
+
+    # Get bounding box
+    min_row, min_col, max_row, max_col = largest_region.bbox
+
+    # Add safety margin for registration (expand by margin_percent)
+    height = max_row - min_row
+    width = max_col - min_col
+
+    margin_h = int(height * margin_percent)
+    margin_w = int(width * margin_percent)
+
+    img_height, img_width = skin_mask.shape
+
+    # Expand with margin, clipping to image bounds
+    left = max(0, min_col - margin_w)
+    top = max(0, min_row - margin_h)
+    right = min(img_width, max_col + margin_w)
+    bottom = min(img_height, max_row + margin_h)
+
+    logging.info(
+        "Forearm region: area=%d px², bbox=(%d,%d,%d,%d), margin=%d%%",
+        largest_region.area, left, top, right, bottom, int(margin_percent * 100)
+    )
+
+    return (left, top, right, bottom)
+
+
+def intelligent_precrop(pil_img: Image.Image, margin_percent: float = 0.15) -> Tuple[Image.Image, Tuple[int, int, int, int] | None]:
+    """Intelligently pre-crop image to forearm region with registration margin.
+
+    Returns:
+        Tuple of (cropped_image, bbox_used)
+        If no forearm found, returns (original_image, None)
+    """
+
+    bbox = find_forearm_bbox(pil_img, margin_percent=margin_percent)
+
+    if bbox is None:
+        logging.warning("Could not identify forearm; using full image")
+        return pil_img, None
+
+    cropped = pil_img.crop(bbox)
+    logging.debug("Pre-cropped to forearm region: %d x %d", cropped.size[0], cropped.size[1])
+
+    return cropped, bbox
 
 
 def illumination_correction(pil_img: Image.Image, clip_limit: float = 2.0) -> Image.Image:
@@ -844,11 +961,20 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     early_original = load_image(args.early)
     late_original = load_image(args.late)
 
-    # Apply pre-processing if enabled
+    logging.info("Performing intelligent pre-crop to identify forearm regions independently")
+    # Identify forearm in each image independently using skin segmentation
+    # This removes background noise/hands/elbows while keeping enough for registration
+    baseline_precrop, baseline_bbox = intelligent_precrop(baseline_original, margin_percent=0.15)
+    early_precrop, early_bbox = intelligent_precrop(early_original, margin_percent=0.15)
+    late_precrop, late_bbox = intelligent_precrop(late_original, margin_percent=0.15)
+
+    logging.info("Pre-crop complete - forearm regions identified with 15%% safety margin")
+
+    # Apply pre-processing if enabled (on pre-cropped images for better registration)
     if args.enable_preprocessing:
-        logging.info("Applying pre-processing pipeline")
+        logging.info("Applying pre-processing pipeline to pre-cropped images")
         baseline = preprocess_image(
-            baseline_original,
+            baseline_precrop,
             apply_illumination=True,
             apply_bilateral=True,
             apply_normalize=True,
@@ -859,7 +985,7 @@ def run_pipeline(args: argparse.Namespace) -> Path:
             bilateral_sigma_space=args.bilateral_sigma_space,
         )
         early = preprocess_image(
-            early_original,
+            early_precrop,
             apply_illumination=True,
             apply_bilateral=True,
             apply_normalize=True,
@@ -870,7 +996,7 @@ def run_pipeline(args: argparse.Namespace) -> Path:
             bilateral_sigma_space=args.bilateral_sigma_space,
         )
         late = preprocess_image(
-            late_original,
+            late_precrop,
             apply_illumination=True,
             apply_bilateral=True,
             apply_normalize=True,
@@ -881,15 +1007,17 @@ def run_pipeline(args: argparse.Namespace) -> Path:
             bilateral_sigma_space=args.bilateral_sigma_space,
         )
     else:
-        baseline = baseline_original
-        early = early_original
-        late = late_original
+        # Use pre-cropped images even without additional preprocessing
+        baseline = baseline_precrop
+        early = early_precrop
+        late = late_precrop
 
     base_width, base_height = baseline.size
-    logging.debug("Baseline image size: %s x %s", base_width, base_height)
+    logging.debug("Pre-cropped baseline image size: %s x %s", base_width, base_height)
 
-    logging.info("Registering follow-up images to baseline (using full images for maximum features)")
-    # Registration uses full/preprocessed images to maximize SIFT keypoints
+    logging.info("Registering pre-cropped follow-up images to baseline")
+    # Registration now uses pre-cropped images (forearm + margin) for cleaner SIFT matching
+    # Background noise removed while keeping enough features for robust alignment
     matrix_early_to_base = affine_register(early, baseline)
     matrix_late_to_base = affine_register(late, baseline)
 

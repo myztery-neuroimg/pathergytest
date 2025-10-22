@@ -124,29 +124,45 @@ Each overlay marks the same papule pair aligned to the Day-1 contour, showing th
 The pipeline executes in this specific order to ensure accurate tracking:
 
 1. **Load Images**: Load Day 0, Day 1, and Day 2+ images
-2. **Pre-process** (optional): Apply illumination correction, bilateral filtering, color normalization to improve registration
-3. **Register**: Align follow-up images to baseline using SIFT + RANSAC on FULL images (maximum features for robust alignment)
-4. **Warp**: Transform follow-up images to baseline coordinate frame
-5. **Identify Shared Anatomical Region**: Find the shared forearm region across ALIGNED images
-6. **Crop to Shared Region**: Eliminate hands, elbows, and background from all aligned images
-7. **Detect Puncture Sites**: Detect Day 0 puncture sites on cropped baseline image only
-8. **Track Sites**: Use the same Day 0 coordinates across all cropped, aligned timepoints
+2. **Intelligent Pre-Crop**: Independently identify forearm region in each image using multi-color-space skin segmentation (HSV + YCrCb)
+   - Removes background noise, hands, elbows from each image independently
+   - Adds 15% safety margin to preserve features for registration
+   - Handles unaligned images (different rotations/positions/scales)
+3. **Pre-process** (optional): Apply illumination correction, bilateral filtering, color normalization on pre-cropped images
+4. **Register**: Align pre-cropped follow-up images to pre-cropped baseline using SIFT + RANSAC
+   - Cleaner feature matching without background noise
+   - Still has enough forearm features for robust alignment
+5. **Warp**: Transform follow-up images to baseline coordinate frame
+6. **Refine Shared Region** (optional): Final refinement to crop aligned images to exact shared forearm region
+7. **Detect Puncture Sites**: Detect Day 0 puncture sites on refined baseline image only
+8. **Track Sites**: Use the same Day 0 coordinates across all aligned, refined timepoints
 
 This order is critical because:
-- **Registration before cropping**: Full images provide maximum SIFT features for robust alignment; handles rotation/translation/scale
-- **Preprocessing before registration**: Illumination correction helps SIFT matching work across different lighting conditions
-- **Shared region after alignment**: Only meaningful to find "shared" anatomy once images are aligned in same coordinate frame
-- **Detection on cropped images**: Eliminates confounding features (hands/elbows) and focuses on relevant forearm anatomy
-- **Stable coordinates**: All images in same coordinate space after warp+crop; Day 0 puncture coordinates apply directly
+- **Intelligent pre-crop BEFORE registration**: Removes confounding features (hands, background) that create false SIFT matches, while keeping enough forearm detail for alignment
+- **Independent skin segmentation**: Each image analyzed separately to find its own forearm region, regardless of rotation/position
+- **Safety margin**: 15% expansion ensures SIFT has enough overlapping features between images for robust registration
+- **Preprocessing after pre-crop**: Illumination correction helps SIFT matching, applied to relevant anatomy only
+- **Registration on pre-cropped images**: Cleaner, more reliable alignment focused on forearm features
+- **Optional final refinement**: Additional crop to exact shared region after alignment
+- **Stable coordinates**: All images in same coordinate space; Day 0 puncture coordinates apply directly
 
 ### Technical Details
 
-**Geomorphological Feature Identification:**
-- Uses morphological operations (closing/opening) with elliptical kernels to identify skin regions
-- Filters connected components by minimum area to remove noise
-- Computes intersection of content masks across all three ALIGNED timepoints
-- Finds bounding box containing the shared forearm region
-- This happens AFTER registration/warping but BEFORE detection to establish the clean anatomical region of interest
+**Intelligent Pre-Crop (Skin Segmentation):**
+- **Multi-color-space approach**: Combines HSV and YCrCb color spaces for robust skin detection
+  - HSV: Detects skin hue (0-50°) regardless of brightness
+  - YCrCb: Detects skin chrominance (Cr: 133-173, Cb: 77-127) robust to illumination
+  - Logical AND of both masks for high-confidence skin pixels
+- **Morphological refinement**: Elliptical kernels (11×11) for closing/opening to remove noise
+- **Connected component analysis**: Identifies largest skin region (forearm) using scikit-image
+- **Bounding box with margin**: Adds 15% safety margin to preserve features for SIFT registration
+- **Independent processing**: Each image analyzed separately, handles rotation/translation/scale differences
+
+**Post-Alignment Refinement (Optional):**
+- Uses morphological operations on ALIGNED images to find exact shared forearm region
+- Computes intersection of content masks across all three aligned timepoints
+- Final crop to clean anatomical region
+- This is a refinement step after registration, not the primary cropping mechanism
 
 **Pre-processing** (optional):
 - **Illumination correction**: LAB color space conversion with CLAHE applied to L channel to normalize lighting conditions
@@ -155,10 +171,13 @@ This order is critical because:
 - **Unsharp masking**: Edge enhancement technique to improve feature detection and alignment
 
 **Registration:**
-- **SIFT feature matching**: Scale-Invariant Feature Transform to detect distinctive keypoints on FULL images for maximum features
+- **SIFT feature matching**: Scale-Invariant Feature Transform to detect distinctive keypoints on PRE-CROPPED images
+  - Focuses on forearm features only (cleaner matching without background noise)
+  - Still has enough features due to 15% safety margin
 - **Affine transformation via RANSAC**: Robust estimation to align follow-up images to baseline frame
-- Handles rotation, translation, and scale differences between images
+- Handles rotation, translation, and scale differences between pre-cropped images
 - Uses preprocessed images if preprocessing is enabled (improves feature matching under varying lighting)
+- Benefits from pre-crop: fewer false matches from hands/background, more reliable alignment
 
 **Puncture Site Detection and Tracking:**
 - **Day 0 (Baseline)**: HSV-based red hue segmentation to detect puncture sites on the ALIGNED AND CROPPED baseline image
