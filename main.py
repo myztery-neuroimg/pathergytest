@@ -309,28 +309,95 @@ def affine_register(src_pil: Image.Image, dst_pil: Image.Image) -> np.ndarray:
 
 
 def detect_papules_red(
-    pil_img: Image.Image, *, min_area: int = 30, max_cnt: int = 2
+    pil_img: Image.Image,
+    *,
+    min_area: int = 30,
+    max_area: int = 500,
+    min_distance_px: int = 20,
+    max_distance_px: int = 150
 ) -> List[Coordinate]:
-    """Detect red papular regions using HSV thresholding."""
+    """Detect TWO closely-spaced injection sites using HSV thresholding.
 
+    Pathergy test protocol requires two puncture sites close together (typically 2-3 cm).
+    This function finds the best pair of red spots that match this criterion.
+
+    Args:
+        pil_img: Input image
+        min_area: Minimum area for a valid injection site (pixels)
+        max_area: Maximum area for a valid injection site (pixels)
+        min_distance_px: Minimum distance between two injection sites (pixels)
+        max_distance_px: Maximum distance between two injection sites (pixels)
+
+    Returns:
+        List of two (x, y) coordinates for injection sites, or empty list if not found
+    """
+
+    logging.debug("Detecting two closely-spaced injection sites")
     bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+
+    # Detect red regions (injection sites and marker)
     mask = cv2.inRange(hsv, (0, 60, 60), (12, 255, 255)) | cv2.inRange(
         hsv, (170, 60, 60), (180, 255, 255)
     )
     mask = cv2.medianBlur(mask, 3)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    points: List[Tuple[int, int, float]] = []
+
+    # Extract all potential injection sites with their properties
+    candidates: List[Tuple[int, int, float, float]] = []
     for contour in contours:
         area = cv2.contourArea(contour)
-        if area >= min_area:
+        if min_area <= area <= max_area:  # Filter by size
             moments = cv2.moments(contour)
             if moments["m00"]:
                 cx = int(moments["m10"] / moments["m00"])
                 cy = int(moments["m01"] / moments["m00"])
-                points.append((cx, cy, area))
-    points.sort(key=lambda t: t[2], reverse=True)
-    return [(x, y) for x, y, _ in points[:max_cnt]]
+
+                # Calculate circularity (injection sites should be roughly circular)
+                perimeter = cv2.arcLength(contour, True)
+                circularity = (4 * math.pi * area) / (perimeter * perimeter + 1e-6)
+
+                candidates.append((cx, cy, area, circularity))
+
+    if len(candidates) < 2:
+        logging.warning("Found fewer than 2 injection site candidates")
+        return [(x, y) for x, y, _, _ in candidates]
+
+    # Find the best pair: two sites close together with similar properties
+    best_pair = None
+    best_score = float('inf')
+
+    for i, (x1, y1, area1, circ1) in enumerate(candidates):
+        for j, (x2, y2, area2, circ2) in enumerate(candidates[i + 1:], start=i + 1):
+            # Calculate distance between potential injection sites
+            distance = math.hypot(x2 - x1, y2 - y1)
+
+            if min_distance_px <= distance <= max_distance_px:
+                # Score based on:
+                # - Distance similarity to expected spacing
+                # - Size similarity (both should be similar)
+                # - Circularity (both should be circular)
+                target_distance = (min_distance_px + max_distance_px) / 2
+                distance_score = abs(distance - target_distance)
+                size_diff = abs(area1 - area2) / max(area1, area2)
+                circ_score = 2.0 - (circ1 + circ2)  # Higher circularity = better
+
+                # Combined score (lower is better)
+                score = distance_score + (size_diff * 50) + (circ_score * 100)
+
+                if score < best_score:
+                    best_score = score
+                    best_pair = ((x1, y1), (x2, y2))
+
+    if best_pair:
+        logging.info("Found injection site pair with score: %.2f", best_score)
+        # Sort by x-coordinate for consistent ordering
+        return sorted(best_pair, key=lambda p: p[0])
+    else:
+        logging.warning("No valid injection site pair found; returning largest candidates")
+        # Fallback: return two largest candidates
+        candidates.sort(key=lambda t: t[2], reverse=True)
+        return [(x, y) for x, y, _, _ in candidates[:2]]
 
 
 def detect_papules_dark(
@@ -858,8 +925,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path.cwd(),
-        help="Directory to write outputs (default: current directory)",
+        default=None,
+        help="Directory to write outputs (default: same directory as baseline image)",
     )
     parser.add_argument(
         "--radius",
@@ -968,6 +1035,11 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     configure_logging(args.log_level)
     ensure_inputs_exist([args.baseline, args.early, args.late])
 
+    # Set output directory to baseline image directory if not specified
+    if args.output_dir is None:
+        args.output_dir = args.baseline.parent
+        logging.info("Output directory not specified; using baseline image directory: %s", args.output_dir)
+
     logging.info("Loading images")
     baseline_original = load_image(args.baseline)
     early_original = load_image(args.early)
@@ -981,6 +1053,20 @@ def run_pipeline(args: argparse.Namespace) -> Path:
     late_precrop, late_bbox = intelligent_precrop(late_original, margin_percent=0.15)
 
     logging.info("Pre-crop complete - forearm regions identified with 15%% safety margin")
+
+    # Save intermediate pre-cropped images for debugging
+    output_dir = args.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    baseline_precrop_path = output_dir / "intermediate_baseline_precrop.jpg"
+    early_precrop_path = output_dir / "intermediate_early_precrop.jpg"
+    late_precrop_path = output_dir / "intermediate_late_precrop.jpg"
+
+    baseline_precrop.save(baseline_precrop_path, quality=95)
+    early_precrop.save(early_precrop_path, quality=95)
+    late_precrop.save(late_precrop_path, quality=95)
+
+    logging.info("Saved intermediate pre-cropped images to %s", output_dir)
 
     # Apply pre-processing if enabled (on pre-cropped images for better registration)
     if args.enable_preprocessing:
