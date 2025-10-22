@@ -693,6 +693,19 @@ def common_content_bbox(
 
     logger = logging.getLogger(__name__)
 
+    # Ensure all images have the same size for mask intersection
+    sizes = [img.size for img in images]
+    if len(set(sizes)) > 1:
+        logger.warning(
+            "Images have different sizes: %s. Resizing all to match first image.",
+            sizes
+        )
+        target_size = sizes[0]
+        images = [
+            img if img.size == target_size else img.resize(target_size, Image.Resampling.LANCZOS)
+            for img in images
+        ]
+
     refined_masks = []
     for idx, image in enumerate(images, start=1):
         raw_mask = _content_mask(image, threshold=threshold)
@@ -713,6 +726,17 @@ def common_content_bbox(
             )
         else:
             logger.debug("Content mask %d retains no components", idx)
+
+    # Ensure all masks are the same shape for bitwise_and
+    mask_shapes = [mask.shape for mask in refined_masks]
+    if len(set(mask_shapes)) > 1:
+        logger.warning(
+            "Masks have different shapes: %s. Using minimum common dimensions.",
+            mask_shapes
+        )
+        min_height = min(shape[0] for shape in mask_shapes)
+        min_width = min(shape[1] for shape in mask_shapes)
+        refined_masks = [mask[:min_height, :min_width] for mask in refined_masks]
 
     intersection = refined_masks[0]
     for mask in refined_masks[1:]:
