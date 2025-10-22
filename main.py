@@ -121,36 +121,44 @@ def preprocess_image(
         apply_bilateral: Apply bilateral filtering
         apply_normalize: Apply color normalization
         apply_unsharp: Apply unsharp masking
-        illumination_clip: CLAHE clip limit for illumination correction
-        bilateral_d: Diameter of pixel neighborhood for bilateral filter
-        bilateral_sigma_color: Filter sigma in color space
-        bilateral_sigma_space: Filter sigma in coordinate space
-        unsharp_kernel: Kernel size for unsharp mask
-        unsharp_strength: Strength of unsharp mask effect
+        illumination_clip: CLAHE clip limit for illumination correction (range: 0.0-10.0, typical: 1.0-4.0)
+        bilateral_d: Diameter of pixel neighborhood for bilateral filter (must be positive odd integer, typical: 5-15)
+        bilateral_sigma_color: Filter sigma in color space (range: 10-200, typical: 50-100)
+        bilateral_sigma_space: Filter sigma in coordinate space (range: 10-200, typical: 50-100)
+        unsharp_kernel: Kernel size for unsharp mask (must be positive odd integer)
+        unsharp_strength: Strength of unsharp mask effect (range: 0.5-3.0)
 
     Returns:
         Preprocessed PIL Image
+
+    Raises:
+        ValueError: If parameters are out of valid ranges
     """
 
     logging.debug("Starting image pre-processing pipeline")
-    processed = pil_img
 
-    if apply_illumination:
-        processed = illumination_correction(processed, clip_limit=illumination_clip)
+    try:
+        processed = pil_img
 
-    if apply_bilateral:
-        processed = bilateral_filter_preprocess(
-            processed, d=bilateral_d, sigma_color=bilateral_sigma_color, sigma_space=bilateral_sigma_space
-        )
+        if apply_illumination:
+            processed = illumination_correction(processed, clip_limit=illumination_clip)
 
-    if apply_normalize:
-        processed = normalize_colors(processed)
+        if apply_bilateral:
+            processed = bilateral_filter_preprocess(
+                processed, d=bilateral_d, sigma_color=bilateral_sigma_color, sigma_space=bilateral_sigma_space
+            )
 
-    if apply_unsharp:
-        processed = unsharp_mask(processed, kernel_size=unsharp_kernel, strength=unsharp_strength)
+        if apply_normalize:
+            processed = normalize_colors(processed)
 
-    logging.debug("Pre-processing pipeline complete")
-    return processed
+        if apply_unsharp:
+            processed = unsharp_mask(processed, kernel_size=unsharp_kernel, strength=unsharp_strength)
+
+        logging.debug("Pre-processing pipeline complete")
+        return processed
+    except Exception as exc:
+        logging.error("Pre-processing failed: %s", exc)
+        raise ValueError(f"Image pre-processing failed: {exc}") from exc
 
 
 def affine_register(src_pil: Image.Image, dst_pil: Image.Image) -> np.ndarray:
