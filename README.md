@@ -111,6 +111,7 @@ Requirements:
    - `outputs/baseline_hsv_mask.jpg` - HSV-based red detection mask on baseline
    - `outputs/baseline_structural_edges.jpg` - Structural edges (arm outline, elbow, creases) used for registration
    - `outputs/baseline_arm_orientation.jpg` - Detected arm principal axis (lengthwise direction)
+   - `outputs/baseline_scale_calibration.jpg` - Scale calibration showing markers, arm width, and calculated px/cm
    - `outputs/baseline_contours_detected.jpg` - Detected puncture sites on Day 0
    - `outputs/early_tracked_sites.jpg` - Day 0 sites tracked to Day 1 image
    - `outputs/late_tracked_sites.jpg` - Day 0 sites tracked to Day 2+ image
@@ -140,12 +141,16 @@ The pipeline executes in this specific order to ensure accurate tracking:
    - Fallback to full-image SIFT if edge-based detection fails
 5. **Warp**: Transform follow-up images to baseline coordinate frame
 6. **Refine Shared Region** (optional): Final refinement to crop aligned images to exact shared forearm region
-7. **Detect Arm Orientation**: Compute forearm's long axis using PCA on skin mask
-8. **Detect Puncture Sites**: Detect Day 0 puncture sites on refined baseline image only
-   - Finds two injection sites arranged LENGTHWISE along arm axis
-   - Scores pairs heavily on alignment with arm orientation (3× weight)
-   - Matches clinical pathergy test protocol
-9. **Track Sites**: Use the same Day 0 coordinates across all aligned, refined timepoints
+7. **Detect +/- Markers**: Identify physician-drawn markers to establish test site location
+8. **Calibrate Scale**: Measure arm width and calculate pixels per cm (typical forearm: 7 cm)
+9. **Compute Local Arm Orientation**: PCA on skin near markers to get arm axis at test site
+10. **Detect Puncture Sites**: Detect Day 0 puncture sites on refined baseline image only
+    - Searches within 5 cm of markers using calibrated scale
+    - Uses real-world spacing (2-3 cm) converted to pixels
+    - Finds two injection sites arranged PARALLEL to local arm axis
+    - Scores pairs heavily on alignment with local arm orientation (5× weight)
+    - Matches clinical pathergy test protocol
+11. **Track Sites**: Use the same Day 0 coordinates across all aligned, refined timepoints
 
 This order is critical because:
 - **Intelligent pre-crop BEFORE registration**: Removes confounding features (hands, background) that create false SIFT matches, while keeping enough forearm detail for alignment
@@ -157,8 +162,15 @@ This order is critical because:
   - Prioritizes arm STRUCTURE over interior texture
   - Better alignment for tracking anatomical locations over time
 - **Optional final refinement**: Additional crop to exact shared region after alignment
-- **Arm orientation detection**: PCA on skin mask identifies forearm's long axis for lengthwise injection site detection
-- **Lengthwise site detection**: Matches clinical protocol where sites are arranged parallel to arm axis (not perpendicular)
+- **Marker detection establishes test site**: Identifies where physician marked the test location
+- **Geomorphological scale calibration**: CRITICAL - cannot use fixed pixel distances
+  - Camera distance and zoom vary between images
+  - Must measure arm width to establish scale (pixels per cm)
+  - Converts real-world protocol (2-3 cm) to image-specific pixel distances
+  - Example: 210 px arm width → 30 px/cm → 2.5 cm spacing = 75 px
+- **Local orientation at test site**: Accounts for arm curvature; more accurate than global axis
+- **Marker-relative search**: Looks for sites only near markers (within 5 cm radius)
+- **Parallel to LOCAL arm axis**: Sites must align with arm direction at that specific location
 - **Stable coordinates**: All images in same coordinate space; Day 0 puncture coordinates apply directly
 
 ### Technical Details
@@ -208,16 +220,39 @@ This order is critical because:
 - **Purpose**: Used to detect injection sites arranged LENGTHWISE along the arm
 - **Clinical relevance**: Pathergy test protocol requires sites parallel to arm axis (not perpendicular)
 
+**Geomorphological Scale Calibration:**
+- **Problem**: Camera distance and zoom vary between images; cannot use fixed pixel distances
+- **Solution**: Calibrate using anatomical features with known dimensions
+- **Marker Detection**:
+  - Detects physician-drawn +/- markers (pen ink or red marker)
+  - Combines grayscale thresholding and HSV color detection
+  - Identifies test site location as marker centroid
+  - Filters by area (>500 px) to distinguish from injection sites
+- **Arm Width Measurement**:
+  - Measures forearm width in pixels at test site y-coordinate
+  - Assumes typical forearm width: 7 cm
+  - Calculates pixels_per_cm = arm_width_px / 7.0
+  - Dynamically adapts to camera distance and image scale
+- **Real-World Distance Conversion**:
+  - Protocol spacing: 2-3 cm → converted to pixels using scale
+  - Search radius: 5 cm around markers → 5 * pixels_per_cm
+  - Example: If arm width is 210 px, scale is 30 px/cm, so 2.5 cm = 75 px
+- **Local Arm Orientation at Test Site**:
+  - PCA on skin pixels within 150 px radius of markers
+  - Computes LOCAL arm axis (accounts for curvature)
+  - More accurate than global orientation
+
 **Puncture Site Detection and Tracking:**
-- **Day 0 (Baseline)**: HSV-based red hue segmentation with lengthwise alignment constraint
-  - Detects red regions (injection sites and +/- markers)
-  - Filters by size (excludes large markers, keeps puncture sites)
+- **Day 0 (Baseline)**: Scale-calibrated HSV segmentation with marker-relative search
+  - Detects red regions within 5 cm of markers
+  - Filters by size (30-500 px area, excludes large markers)
   - Scores pairs based on:
-    1. Distance similarity (20-150 pixels, typically 2-3 cm)
+    1. Distance from ideal spacing (2.5 cm in real-world units)
     2. Size similarity (both sites should be similar)
     3. Circularity (both should be circular)
-    4. **Alignment with arm axis** (3× weight - sites MUST be lengthwise)
-  - Selects best pair aligned parallel to forearm's long axis
+    4. **Alignment with LOCAL arm axis** (5× weight - sites MUST be parallel)
+  - Selects best pair aligned parallel to arm at test site
+  - Logs detected spacing: "distance=2.5 cm (75.3 px), alignment=3.2° from local arm axis"
 - **Day 1-5+ (Follow-up)**: The same anatomical locations are tracked across all cropped, aligned images; no independent detection is performed
 - Tracks the evolution of the SAME puncture sites over time
 - Coordinates remain stable because all images are in the same aligned+cropped coordinate space
