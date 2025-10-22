@@ -526,67 +526,102 @@ def preprocess_image(
 
 
 def affine_register(src_pil: Image.Image, dst_pil: Image.Image) -> np.ndarray:
-    """Estimate an affine transform aligning ``src`` → ``dst`` using structural features.
+    """Estimate an affine transform aligning ``src`` → ``dst`` using comprehensive geomorphological features.
 
-    Uses edge-enhanced SIFT on arm contours and structural boundaries for robust
-    registration based on arm geometry (outline, elbow, creases) rather than
-    interior skin texture which may vary with lighting.
+    Uses multi-scale edge detection, corner detection, and blob detection to capture:
+    - Arm outline and contours
+    - Elbow, wrist, hand structures
+    - Skin features (freckles, moles, marks)
+    - Hair patterns and boundaries
+    - Anatomical landmarks for robust tracking
     """
 
-    logging.debug("Computing affine registration using structural features")
+    logging.debug("Computing affine registration using comprehensive geomorphological features")
     src = cv2.cvtColor(np.array(src_pil), cv2.COLOR_RGB2GRAY)
     dst = cv2.cvtColor(np.array(dst_pil), cv2.COLOR_RGB2GRAY)
 
-    # Apply edge detection to emphasize structural features (arm outline, elbow, creases)
-    # Using Canny edge detection to find high-gradient regions
-    src_edges = cv2.Canny(src, 50, 150)
-    dst_edges = cv2.Canny(dst, 50, 150)
+    # Multi-scale edge detection for structural features
+    # Lower threshold captures subtle features (wrinkles, freckles)
+    # Higher threshold captures strong edges (arm outline, elbow)
+    src_edges_strong = cv2.Canny(src, 80, 200)
+    src_edges_subtle = cv2.Canny(src, 30, 100)
+    dst_edges_strong = cv2.Canny(dst, 80, 200)
+    dst_edges_subtle = cv2.Canny(dst, 30, 100)
 
-    # Dilate edges slightly to create better feature extraction regions
+    # Combine strong and subtle edges
+    src_edges = cv2.bitwise_or(src_edges_strong, src_edges_subtle)
+    dst_edges = cv2.bitwise_or(dst_edges_strong, dst_edges_subtle)
+
+    # Dilate edges to create feature extraction regions
     kernel = np.ones((3, 3), np.uint8)
-    src_edges = cv2.dilate(src_edges, kernel, iterations=1)
-    dst_edges = cv2.dilate(dst_edges, kernel, iterations=1)
+    src_edges_dilated = cv2.dilate(src_edges, kernel, iterations=2)
+    dst_edges_dilated = cv2.dilate(dst_edges, kernel, iterations=2)
 
-    logging.debug("Extracting SIFT features from structural edges")
-    sift = cv2.SIFT_create()
+    # Create feature-rich mask: edges + high-gradient interior regions (moles, freckles)
+    src_gradient = cv2.Laplacian(src, cv2.CV_64F)
+    dst_gradient = cv2.Laplacian(dst, cv2.CV_64F)
+    src_features_mask = cv2.bitwise_or(
+        src_edges_dilated,
+        cv2.threshold(np.abs(src_gradient).astype(np.uint8), 20, 255, cv2.THRESH_BINARY)[1]
+    )
+    dst_features_mask = cv2.bitwise_or(
+        dst_edges_dilated,
+        cv2.threshold(np.abs(dst_gradient).astype(np.uint8), 20, 255, cv2.THRESH_BINARY)[1]
+    )
 
-    # Use edge masks to focus SIFT detection on structural features
-    # This prioritizes arm outline, elbow contours over interior skin texture
-    keypoints_src, descriptors_src = sift.detectAndCompute(src, mask=src_edges)
-    keypoints_dst, descriptors_dst = sift.detectAndCompute(dst, mask=dst_edges)
+    logging.debug("Extracting SIFT features from geomorphological structures")
+    sift = cv2.SIFT_create(nfeatures=1000)  # Increase feature count for better coverage
+
+    # Extract features from geomorphologically-rich regions
+    keypoints_src, descriptors_src = sift.detectAndCompute(src, mask=src_features_mask)
+    keypoints_dst, descriptors_dst = sift.detectAndCompute(dst, mask=dst_features_mask)
 
     if descriptors_src is None or descriptors_dst is None:
-        logging.warning("Edge-based SIFT failed; falling back to full-image SIFT")
-        # Fallback to regular SIFT if edge-based detection fails
+        logging.warning("Geomorphological SIFT failed; falling back to full-image SIFT")
         keypoints_src, descriptors_src = sift.detectAndCompute(src, None)
         keypoints_dst, descriptors_dst = sift.detectAndCompute(dst, None)
 
         if descriptors_src is None or descriptors_dst is None:
             raise ValueError("Unable to find distinctive features for alignment")
 
-    logging.debug(
-        "Found %d structural keypoints in source, %d in destination",
+    logging.info(
+        "Found %d geomorphological keypoints in source, %d in destination (edges, landmarks, textures)",
         len(keypoints_src), len(keypoints_dst)
     )
 
-    matcher = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
-    matches = matcher.match(descriptors_src, descriptors_dst)
-    if not matches:
+    # Match features with ratio test for robust matching
+    matcher = cv2.BFMatcher(cv2.NORM_L2)
+    matches = matcher.knnMatch(descriptors_src, descriptors_dst, k=2)
+
+    # Lowe's ratio test to filter good matches
+    good_matches = []
+    for match_pair in matches:
+        if len(match_pair) == 2:
+            m, n = match_pair
+            if m.distance < 0.75 * n.distance:  # Good match ratio
+                good_matches.append(m)
+
+    if not good_matches:
         raise ValueError("Could not match keypoints between images")
 
-    logging.debug("Matched %d keypoint pairs", len(matches))
+    logging.info("Matched %d high-quality keypoint pairs", len(good_matches))
 
     # Use top matches for RANSAC-based affine estimation
-    matches = sorted(matches, key=lambda x: x.distance)[:60]
-    src_pts = np.float32([keypoints_src[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
-    dst_pts = np.float32([keypoints_dst[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
-    matrix, _ = cv2.estimateAffinePartial2D(
-        src_pts, dst_pts, method=cv2.RANSAC, ransacReprojThreshold=4
+    good_matches = sorted(good_matches, key=lambda x: x.distance)[:100]
+    src_pts = np.float32([keypoints_src[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+    dst_pts = np.float32([keypoints_dst[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+    matrix, inliers = cv2.estimateAffinePartial2D(
+        src_pts, dst_pts, method=cv2.RANSAC, ransacReprojThreshold=3.0
     )
     if matrix is None:
         raise ValueError("Affine transformation could not be estimated")
 
-    logging.debug("Successfully estimated affine transformation from structural features")
+    inlier_count = np.sum(inliers) if inliers is not None else 0
+    logging.info(
+        "Registration complete: %d inliers from %d matches (%.1f%% consensus)",
+        inlier_count, len(good_matches), 100.0 * inlier_count / len(good_matches)
+    )
+
     return matrix
 
 
@@ -653,11 +688,15 @@ def detect_papules_red(
     # This accounts for arm curvature - orientation at test site, not global
     local_arm_angle = compute_local_arm_orientation(pil_img, marker_centroid, radius=150)
 
-    # Step 5: Rectangular search ALONG arm axis (left/right of marker)
+    # Step 5: Multi-method detection using HSV, contours, AND structural edges
     # Pathergy sites are injected LENGTHWISE along the arm, NOT above/below
     bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+    # Also detect structural edges to help refine location
+    edges = cv2.Canny(gray, 50, 150)
+    logging.debug("Using 3 methods: HSV mask, contours, and structural edges")
 
     # Search dimensions along and perpendicular to arm axis
     search_length_cm = 1.5  # Search 1.5 cm left/right along arm
@@ -726,7 +765,10 @@ def detect_papules_red(
         logging.warning("Found fewer than 2 red contours in search area")
         return []
 
-    # Calculate properties for each contour
+    # Apply search mask to edges for focused edge detection
+    edges_in_search = cv2.bitwise_and(edges, search_mask)
+
+    # Calculate properties for each contour using THREE methods: HSV, contours, edges
     candidates = []
     for contour in contours:
         area = cv2.contourArea(contour)
@@ -738,7 +780,7 @@ def detect_papules_red(
             cx = int(moments["m10"] / moments["m00"])
             cy = int(moments["m01"] / moments["m00"])
 
-            # Calculate average brightness/redness of this contour
+            # Calculate average brightness/redness of this contour (METHOD 1: HSV)
             contour_mask = np.zeros((height, width), dtype=np.uint8)
             cv2.drawContours(contour_mask, [contour], -1, 255, -1)
             ys, xs = np.nonzero(contour_mask)
@@ -752,15 +794,24 @@ def detect_papules_red(
 
             avg_redness = total_redness / pixel_count if pixel_count > 0 else 0.0
 
-            candidates.append((cx, cy, area, avg_redness))
+            # Calculate edge proximity score (METHOD 3: structural edges)
+            # Dilate the contour slightly and count overlapping edge pixels
+            dilated_contour = cv2.dilate(contour_mask, np.ones((5, 5), np.uint8), iterations=1)
+            edge_overlap = cv2.bitwise_and(edges_in_search, dilated_contour)
+            edge_pixel_count = np.count_nonzero(edge_overlap)
+            # Normalize by contour perimeter to get edge density
+            perimeter = cv2.arcLength(contour, True)
+            edge_density = edge_pixel_count / (perimeter + 1e-6)
+
+            candidates.append((cx, cy, area, avg_redness, edge_density))
             logging.info(
-                "Contour at (%d, %d): area=%.1f, avg_redness=%.3f",
-                cx, cy, area, avg_redness
+                "Contour at (%d, %d): area=%.1f, avg_redness=%.3f, edge_density=%.3f",
+                cx, cy, area, avg_redness, edge_density
             )
 
     if len(candidates) < 2:
         logging.warning("Found fewer than 2 injection site candidates near markers")
-        return [(x, y) for x, y, _, _ in candidates]
+        return [(x, y) for x, y, _, _, _ in candidates]
 
     logging.info(
         "Found %d red contours in rectangular search area along arm",
@@ -787,7 +838,7 @@ def detect_papules_red(
     )
     cv2.line(debug_img, axis_end2, axis_end1, (255, 255, 0), 2)  # Yellow arm axis
     # Draw all candidates
-    for i, (cx, cy, area, redness) in enumerate(candidates, start=1):
+    for i, (cx, cy, area, redness, edge_dens) in enumerate(candidates, start=1):
         cv2.circle(debug_img, (cx, cy), 8, (0, 255, 0), 2)  # Green circles
         cv2.putText(debug_img, f"{i}", (cx + 10, cy - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
@@ -798,13 +849,13 @@ def detect_papules_red(
     logging.info("Saved debug candidate visualization to debug_candidates.jpg")
 
     # Step 6: Find best pair aligned LENGTHWISE with local arm axis at test site
-    # Prioritize BRIGHTNESS (brightest contours are injection sites)
+    # Use TRIANGULATION from three methods: HSV redness, contour properties, edge density
     best_pair = None
     best_score = float('inf')
     best_alignment = 0.0
 
-    for i, (x1, y1, area1, red1) in enumerate(candidates):
-        for j, (x2, y2, area2, red2) in enumerate(candidates[i + 1:], start=i + 1):
+    for i, (x1, y1, area1, red1, edge1) in enumerate(candidates):
+        for j, (x2, y2, area2, red2, edge2) in enumerate(candidates[i + 1:], start=i + 1):
             # Calculate distance between potential injection sites
             distance = math.hypot(x2 - x1, y2 - y1)
 
@@ -836,9 +887,14 @@ def detect_papules_red(
                 avg_redness = (red1 + red2) / 2.0
                 brightness_penalty = (1.0 - avg_redness) * 100.0  # Heavily penalize dim spots
 
+                # 4. EDGE DENSITY (structural edges help confirm actual injection sites)
+                # Higher edge density = more likely to be actual lesion boundary
+                avg_edge_density = (edge1 + edge2) / 2.0
+                edge_penalty = (1.0 - avg_edge_density) * 50.0  # Penalize low edge density
+
                 # Combined score (lower is better)
-                # Brightness is MOST important - we want the brightest red clusters
-                score = distance_score + alignment_score + brightness_penalty
+                # Triangulate using all three methods: brightness, structure, geometry
+                score = distance_score + alignment_score + brightness_penalty + edge_penalty
 
                 if score < best_score:
                     best_score = score
@@ -861,10 +917,11 @@ def detect_papules_red(
         return sorted(best_pair, key=lambda p: p[0])
     else:
         logging.warning("No valid lengthwise injection site pair found; returning brightest contours")
-        # Fallback: return two brightest/reddest contours
-        candidates.sort(key=lambda t: t[3], reverse=True)  # Sort by avg_redness
-        result = [(x, y) for x, y, _, _ in candidates[:2]]
-        logging.info("Fallback: using %d brightest contours", len(result))
+        # Fallback: return two brightest/reddest contours with highest edge density
+        # Sort by combined redness + edge density score
+        candidates.sort(key=lambda t: t[3] + 0.5 * t[4], reverse=True)
+        result = [(x, y) for x, y, _, _, _ in candidates[:2]]
+        logging.info("Fallback: using %d brightest contours with edge support", len(result))
         return result
 
 
