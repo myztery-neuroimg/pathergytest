@@ -653,18 +653,20 @@ def detect_papules_red(
     # This accounts for arm curvature - orientation at test site, not global
     local_arm_angle = compute_local_arm_orientation(pil_img, marker_centroid, radius=150)
 
-    # Step 5: Use HSV mask + contour detection in small radius ADJACENT to marker
-    # This properly identifies CONNECTED red regions (injection sites)
-    # EXCLUDING the dark marker itself
+    # Step 5: Rectangular search ALONG arm axis (left/right of marker)
+    # Pathergy sites are injected LENGTHWISE along the arm, NOT above/below
     bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
-    # Smaller search radius - sites are close to marker but not ON it
-    search_radius_px = int(1.0 * pixels_per_cm)  # Search within 1.0 cm
+    # Search dimensions along and perpendicular to arm axis
+    search_length_cm = 1.5  # Search 1.5 cm left/right along arm
+    search_width_cm = 0.4   # Only 0.4 cm perpendicular (narrow band)
+    marker_exclusion_cm = 0.3  # Exclude 3mm around marker center
 
-    # Exclude marker center itself
-    marker_exclusion_radius = int(0.2 * pixels_per_cm)  # Exclude 2mm around marker center
+    search_length_px = int(search_length_cm * pixels_per_cm)
+    search_width_px = int(search_width_cm * pixels_per_cm)
+    marker_exclusion_px = int(marker_exclusion_cm * pixels_per_cm)
 
     # Create HSV red mask (bright red for pathergy sites)
     red_mask = cv2.inRange(hsv, (0, 60, 60), (20, 255, 255)) | cv2.inRange(
@@ -675,20 +677,46 @@ def detect_papules_red(
     bright_mask = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY)[1]
     red_mask = cv2.bitwise_and(red_mask, bright_mask)
 
-    # Create annular (ring-shaped) search mask around marker
-    # Outer circle: search radius
-    # Inner circle: exclude marker itself
+    # Create rectangular search mask oriented along local arm axis
     height, width = red_mask.shape
     search_mask = np.zeros((height, width), dtype=np.uint8)
-    cv2.circle(search_mask, marker_centroid, search_radius_px, 255, -1)  # Outer circle
-    cv2.circle(search_mask, marker_centroid, marker_exclusion_radius, 0, -1)  # Inner circle (exclude)
 
-    # Combine: only BRIGHT red pixels in ring around marker (excluding marker itself)
+    # Convert local arm angle to radians
+    arm_angle_rad = local_arm_angle * np.pi / 180.0
+
+    # Direction vectors along and perpendicular to arm
+    along_arm = np.array([np.cos(arm_angle_rad), np.sin(arm_angle_rad)])
+    perp_arm = np.array([-np.sin(arm_angle_rad), np.cos(arm_angle_rad)])
+
+    # Create oriented rectangle: extends along arm axis, narrow perpendicular
+    # Rectangle corners relative to marker centroid
+    corners = []
+    for along_sign in [-1, 1]:  # Left and right along arm
+        for perp_sign in [-1, 1]:  # Narrow band perpendicular
+            corner = (
+                marker_centroid[0] + along_sign * search_length_px * along_arm[0] + perp_sign * search_width_px * perp_arm[0],
+                marker_centroid[1] + along_sign * search_length_px * along_arm[1] + perp_sign * search_width_px * perp_arm[1]
+            )
+            corners.append(corner)
+
+    # Draw filled rotated rectangle
+    corners_array = np.array(corners, dtype=np.int32).reshape((-1, 1, 2))
+    cv2.fillPoly(search_mask, [corners_array], 255)
+
+    # Exclude marker center (ellipse oriented along arm)
+    exclusion_ellipse = (
+        marker_centroid,
+        (marker_exclusion_px * 2, marker_exclusion_px),  # Length along arm, width perpendicular
+        local_arm_angle  # Rotation angle
+    )
+    cv2.ellipse(search_mask, exclusion_ellipse, 0, -1)
+
+    # Combine: only BRIGHT red pixels in rectangular band along arm (excluding marker)
     combined_mask = cv2.bitwise_and(red_mask, search_mask)
 
     logging.info(
-        "Search ring: %.2f cm radius, excluding %.2f cm around marker center",
-        search_radius_px / pixels_per_cm, marker_exclusion_radius / pixels_per_cm
+        "Search rectangle: %.2f cm along arm × %.2f cm wide, excluding %.2f cm around marker, arm axis: %.1f°",
+        search_length_cm * 2, search_width_cm * 2, marker_exclusion_cm, local_arm_angle
     )
 
     # Find contours - these are CONNECTED red regions
@@ -735,16 +763,29 @@ def detect_papules_red(
         return [(x, y) for x, y, _, _ in candidates]
 
     logging.info(
-        "Found %d red contours within %.1f cm of markers",
-        len(candidates), search_radius_px / pixels_per_cm
+        "Found %d red contours in rectangular search area along arm",
+        len(candidates)
     )
 
     # DEBUG: Create visualization of all candidates
     debug_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR).copy()
-    # Draw search radius
-    cv2.circle(debug_img, marker_centroid, search_radius_px, (0, 255, 255), 2)  # Cyan circle
+    # Draw search rectangle (oriented along arm)
+    cv2.polylines(debug_img, [corners_array], True, (0, 255, 255), 2)  # Cyan rectangle
+    # Draw marker exclusion ellipse
+    cv2.ellipse(debug_img, exclusion_ellipse, (255, 0, 255), 2)  # Magenta ellipse
     # Draw marker centroid
     cv2.circle(debug_img, marker_centroid, 10, (0, 255, 255), -1)  # Cyan dot
+    # Draw arm axis line
+    axis_len = search_length_px
+    axis_end1 = (
+        int(marker_centroid[0] + axis_len * along_arm[0]),
+        int(marker_centroid[1] + axis_len * along_arm[1])
+    )
+    axis_end2 = (
+        int(marker_centroid[0] - axis_len * along_arm[0]),
+        int(marker_centroid[1] - axis_len * along_arm[1])
+    )
+    cv2.line(debug_img, axis_end2, axis_end1, (255, 255, 0), 2)  # Yellow arm axis
     # Draw all candidates
     for i, (cx, cy, area, redness) in enumerate(candidates, start=1):
         cv2.circle(debug_img, (cx, cy), 8, (0, 255, 0), 2)  # Green circles
