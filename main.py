@@ -356,34 +356,47 @@ def detect_markers(pil_img: Image.Image) -> Tuple[List[Coordinate], Coordinate |
         logging.info("Found %d potential marker regions", len(marker_candidates))
         # Sort by area (largest first)
         marker_candidates.sort(key=lambda t: t[2], reverse=True)
-        markers = [(x, y) for x, y, _ in marker_candidates]
 
-        # Find the closest pair of markers (these should be the + and - symbols)
-        # This is more reliable than using all markers
-        if len(markers) >= 2:
-            min_dist = float('inf')
-            best_pair = (markers[0], markers[1])
+        # Log all detected markers for debugging
+        for i, (x, y, area) in enumerate(marker_candidates[:10], start=1):
+            logging.info("Marker %d: pos=(%d, %d), area=%.1f", i, x, y, area)
 
-            for i, m1 in enumerate(markers):
-                for m2 in markers[i+1:]:
-                    dist = math.hypot(m2[0] - m1[0], m2[1] - m1[1])
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_pair = (m1, m2)
+        # Filter markers by reasonable size and central position
+        # The + symbol should be:
+        # 1. Reasonably sized (300-5000 pixels)
+        # 2. In the central region (not at edges)
+        height, width = np.array(pil_img).shape[:2]
+        central_x_min, central_x_max = width * 0.2, width * 0.8
+        central_y_min, central_y_max = height * 0.2, height * 0.8
 
-            # Use centroid of closest pair as test site
-            centroid_x = int((best_pair[0][0] + best_pair[1][0]) / 2)
-            centroid_y = int((best_pair[0][1] + best_pair[1][1]) / 2)
-            marker_centroid = (centroid_x, centroid_y)
+        reasonable_markers = [
+            (x, y, a) for x, y, a in marker_candidates
+            if 300 < a < 5000 and central_x_min < x < central_x_max and central_y_min < y < central_y_max
+        ]
+
+        if reasonable_markers:
+            # Use the largest reasonable-sized marker in central region
+            marker_centroid = (reasonable_markers[0][0], reasonable_markers[0][1])
             logging.info(
-                "Using closest marker pair at distance %.1f px: (%d, %d) and (%d, %d)",
-                min_dist, best_pair[0][0], best_pair[0][1], best_pair[1][0], best_pair[1][1]
+                "Using largest central marker (area=%.1f) as test site: (%d, %d)",
+                reasonable_markers[0][2], marker_centroid[0], marker_centroid[1]
             )
         else:
-            marker_centroid = markers[0]
+            # Fallback: just use central region without size constraint
+            central_markers = [
+                (x, y, a) for x, y, a in marker_candidates
+                if central_x_min < x < central_x_max and central_y_min < y < central_y_max
+            ]
+            if central_markers:
+                marker_centroid = (central_markers[0][0], central_markers[0][1])
+                logging.warning("Using largest central marker (no size filter): (%d, %d)", marker_centroid[0], marker_centroid[1])
+            else:
+                markers = [(x, y) for x, y, _ in marker_candidates]
+                marker_centroid = markers[0]
+                logging.warning("No central markers found, using largest overall: (%d, %d)", marker_centroid[0], marker_centroid[1])
 
-        logging.info("Marker region centroid: (%d, %d)", marker_centroid[0], marker_centroid[1])
-        return markers, marker_centroid
+        all_markers = [(x, y) for x, y, _ in marker_candidates]
+        return all_markers, marker_centroid
     else:
         logging.warning("No markers detected")
         return [], None
@@ -580,8 +593,8 @@ def affine_register(src_pil: Image.Image, dst_pil: Image.Image) -> np.ndarray:
 def detect_papules_red(
     pil_img: Image.Image,
     *,
-    min_area: int = 10,
-    max_area: int = 500,
+    min_area: int = 3,  # Tiny bright red dots
+    max_area: int = 100,  # Much smaller - exclude larger artifacts
 ) -> List[Coordinate]:
     """Detect TWO injection sites arranged lengthwise along the arm axis.
 
@@ -640,62 +653,117 @@ def detect_papules_red(
     # This accounts for arm curvature - orientation at test site, not global
     local_arm_angle = compute_local_arm_orientation(pil_img, marker_centroid, radius=150)
 
-    # Step 5: Detect red regions (injection sites, excluding large markers)
+    # Step 5: Use HSV mask + contour detection in small radius ADJACENT to marker
+    # This properly identifies CONNECTED red regions (injection sites)
+    # EXCLUDING the dark marker itself
     bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
-    # Relaxed thresholds for subtle redness in low-res images
-    mask = cv2.inRange(hsv, (0, 40, 40), (15, 255, 255)) | cv2.inRange(
-        hsv, (165, 40, 40), (180, 255, 255)
+    # Smaller search radius - sites are close to marker but not ON it
+    search_radius_px = int(1.0 * pixels_per_cm)  # Search within 1.0 cm
+
+    # Exclude marker center itself
+    marker_exclusion_radius = int(0.2 * pixels_per_cm)  # Exclude 2mm around marker center
+
+    # Create HSV red mask (bright red for pathergy sites)
+    red_mask = cv2.inRange(hsv, (0, 60, 60), (20, 255, 255)) | cv2.inRange(
+        hsv, (160, 60, 60), (180, 255, 255)
     )
-    mask = cv2.medianBlur(mask, 3)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Extract potential injection sites (filter by size and proximity to markers)
-    candidates: List[Tuple[int, int, float, float]] = []
-    search_radius_px = int(3.0 * pixels_per_cm)  # Search within 3 cm of markers (sites are very close)
+    # Exclude very dark regions (markers are black/dark, pathergy sites are lighter)
+    bright_mask = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY)[1]
+    red_mask = cv2.bitwise_and(red_mask, bright_mask)
 
+    # Create annular (ring-shaped) search mask around marker
+    # Outer circle: search radius
+    # Inner circle: exclude marker itself
+    height, width = red_mask.shape
+    search_mask = np.zeros((height, width), dtype=np.uint8)
+    cv2.circle(search_mask, marker_centroid, search_radius_px, 255, -1)  # Outer circle
+    cv2.circle(search_mask, marker_centroid, marker_exclusion_radius, 0, -1)  # Inner circle (exclude)
+
+    # Combine: only BRIGHT red pixels in ring around marker (excluding marker itself)
+    combined_mask = cv2.bitwise_and(red_mask, search_mask)
+
+    logging.info(
+        "Search ring: %.2f cm radius, excluding %.2f cm around marker center",
+        search_radius_px / pixels_per_cm, marker_exclusion_radius / pixels_per_cm
+    )
+
+    # Find contours - these are CONNECTED red regions
+    contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if len(contours) < 2:
+        logging.warning("Found fewer than 2 red contours in search area")
+        return []
+
+    # Calculate properties for each contour
+    candidates = []
     for contour in contours:
         area = cv2.contourArea(contour)
-        if min_area <= area <= max_area:  # Filter by size (excludes large markers)
-            moments = cv2.moments(contour)
-            if moments["m00"]:
-                cx = int(moments["m10"] / moments["m00"])
-                cy = int(moments["m01"] / moments["m00"])
+        if area < min_area:  # Skip tiny noise
+            continue
 
-                # Check proximity to marker region
-                dist_to_markers = math.hypot(cx - marker_centroid[0], cy - marker_centroid[1])
-                logging.debug(
-                    "Candidate at (%d, %d): area=%.1f, dist_to_markers=%.1f (max=%.1f)",
-                    cx, cy, area, dist_to_markers, search_radius_px
-                )
-                if dist_to_markers > search_radius_px:
-                    logging.debug("  -> Rejected: too far from markers")
-                    continue  # Too far from markers
+        moments = cv2.moments(contour)
+        if moments["m00"]:
+            cx = int(moments["m10"] / moments["m00"])
+            cy = int(moments["m01"] / moments["m00"])
 
-                # Calculate circularity (injection sites should be roughly circular)
-                perimeter = cv2.arcLength(contour, True)
-                circularity = (4 * math.pi * area) / (perimeter * perimeter + 1e-6)
+            # Calculate average brightness/redness of this contour
+            contour_mask = np.zeros((height, width), dtype=np.uint8)
+            cv2.drawContours(contour_mask, [contour], -1, 255, -1)
+            ys, xs = np.nonzero(contour_mask)
 
-                logging.debug("  -> Accepted: circularity=%.2f", circularity)
-                candidates.append((cx, cy, area, circularity))
+            total_redness = 0.0
+            pixel_count = 0
+            for y, x in zip(ys, xs):
+                h, s, v = hsv[y, x]
+                total_redness += float(s) * float(v) / 65025.0
+                pixel_count += 1
+
+            avg_redness = total_redness / pixel_count if pixel_count > 0 else 0.0
+
+            candidates.append((cx, cy, area, avg_redness))
+            logging.info(
+                "Contour at (%d, %d): area=%.1f, avg_redness=%.3f",
+                cx, cy, area, avg_redness
+            )
 
     if len(candidates) < 2:
         logging.warning("Found fewer than 2 injection site candidates near markers")
         return [(x, y) for x, y, _, _ in candidates]
 
-    logging.debug(
-        "Found %d injection site candidates within %.1f cm of markers",
+    logging.info(
+        "Found %d red contours within %.1f cm of markers",
         len(candidates), search_radius_px / pixels_per_cm
     )
 
+    # DEBUG: Create visualization of all candidates
+    debug_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR).copy()
+    # Draw search radius
+    cv2.circle(debug_img, marker_centroid, search_radius_px, (0, 255, 255), 2)  # Cyan circle
+    # Draw marker centroid
+    cv2.circle(debug_img, marker_centroid, 10, (0, 255, 255), -1)  # Cyan dot
+    # Draw all candidates
+    for i, (cx, cy, area, redness) in enumerate(candidates, start=1):
+        cv2.circle(debug_img, (cx, cy), 8, (0, 255, 0), 2)  # Green circles
+        cv2.putText(debug_img, f"{i}", (cx + 10, cy - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    # Save debug image
+    from PIL import Image as PILImage
+    debug_pil = PILImage.fromarray(cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB))
+    debug_pil.save("/Users/davidbrewster/Documents/Documents_Brewster/debug_candidates.jpg", quality=95)
+    logging.info("Saved debug candidate visualization to debug_candidates.jpg")
+
     # Step 6: Find best pair aligned LENGTHWISE with local arm axis at test site
+    # Prioritize BRIGHTNESS (brightest contours are injection sites)
     best_pair = None
     best_score = float('inf')
     best_alignment = 0.0
 
-    for i, (x1, y1, area1, circ1) in enumerate(candidates):
-        for j, (x2, y2, area2, circ2) in enumerate(candidates[i + 1:], start=i + 1):
+    for i, (x1, y1, area1, red1) in enumerate(candidates):
+        for j, (x2, y2, area2, red2) in enumerate(candidates[i + 1:], start=i + 1):
             # Calculate distance between potential injection sites
             distance = math.hypot(x2 - x1, y2 - y1)
 
@@ -713,30 +781,23 @@ def detect_papules_red(
                     abs(pair_angle - local_arm_angle - 180)
                 )
 
-                # Score components (all lower is better):
-                # 1. Distance from ideal spacing (2.5 cm center of range)
-                ideal_distance_cm = 2.5
+                # Score components (lower is better):
+                # 1. Distance from ideal spacing (1.0 cm center of range)
+                ideal_distance_cm = 1.0
                 ideal_distance_px = ideal_distance_cm * pixels_per_cm
                 distance_score = abs(distance - ideal_distance_px)
 
-                # 2. Size similarity (both sites should be similar size)
-                size_diff = abs(area1 - area2) / max(area1, area2)
+                # 2. Alignment with LOCAL arm axis (must be parallel)
+                alignment_score = angle_diff * 2.0
 
-                # 3. Circularity (both should be circular)
-                circ_score = 2.0 - (circ1 + circ2)
-
-                # 4. Alignment with LOCAL arm axis (CRITICAL - must be parallel)
-                # Heavy penalty for perpendicular arrangements
-                alignment_score = angle_diff
+                # 3. BRIGHTNESS/REDNESS (CRITICAL - pathergy sites are BRIGHTEST RED)
+                # Higher redness = lower score (since lower score is better)
+                avg_redness = (red1 + red2) / 2.0
+                brightness_penalty = (1.0 - avg_redness) * 100.0  # Heavily penalize dim spots
 
                 # Combined score (lower is better)
-                # Weight alignment most heavily - sites MUST be lengthwise
-                score = (
-                    distance_score +
-                    (size_diff * 50) +
-                    (circ_score * 100) +
-                    (alignment_score * 5.0)  # 5x weight for parallelism
-                )
+                # Brightness is MOST important - we want the brightest red clusters
+                score = distance_score + alignment_score + brightness_penalty
 
                 if score < best_score:
                     best_score = score
@@ -758,10 +819,12 @@ def detect_papules_red(
         # Sort by position along arm axis for consistent ordering
         return sorted(best_pair, key=lambda p: p[0])
     else:
-        logging.warning("No valid lengthwise injection site pair found; returning largest candidates")
-        # Fallback: return two largest candidates
-        candidates.sort(key=lambda t: t[2], reverse=True)
-        return [(x, y) for x, y, _, _ in candidates[:2]]
+        logging.warning("No valid lengthwise injection site pair found; returning brightest contours")
+        # Fallback: return two brightest/reddest contours
+        candidates.sort(key=lambda t: t[3], reverse=True)  # Sort by avg_redness
+        result = [(x, y) for x, y, _, _ in candidates[:2]]
+        logging.info("Fallback: using %d brightest contours", len(result))
+        return result
 
 
 def detect_papules_dark(
