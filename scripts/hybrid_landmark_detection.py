@@ -158,7 +158,7 @@ def find_arm_edge_point(image_path):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Hybrid VLM + CV landmark detection")
+    parser = argparse.ArgumentParser(description="Landmark detection")
     parser.add_argument("day0", help="Path to day 0 image")
     parser.add_argument("day1", help="Path to day 1 image")
     parser.add_argument("day2", help="Path to day 2 image")
@@ -170,62 +170,63 @@ if __name__ == "__main__":
         "day2": args.day2
     }
 
-    print("="*100)
-    print("HYBRID LANDMARK DETECTION: Computer Vision-based precise coordinates")
-    print("="*100)
-
+    print (f"Debug: Analysing\n{args.day0}\n{args.day1}\n{args.day2}")
     landmarks = {}
 
     for day, img_path in images.items():
-        print("\nProcessing {day}...")
+        print(f"\nProcessing {day}...")
         landmarks[day] = {}
 
         marker = find_marker_center(img_path)
         if marker:
             landmarks[day]['marker'] = list(marker)
-            print("  marker: {marker}")
+            print(f"  marker: {marker}")
         else:
             print("  marker: NOT FOUND")
 
         vein = find_prominent_vein_junction(img_path)
         if vein:
             landmarks[day]['vein'] = list(vein)
-            print("  vein: {vein}")
+            print(f"  vein: {vein}")
         else:
             print("  vein: NOT FOUND")
 
         freckle = find_dark_freckle(img_path)
         if freckle:
             landmarks[day]['freckle'] = list(freckle)
-            print("  freckle: {freckle}")
+            print(f"  freckle: {freckle}")
         else:
             print("  freckle: NOT FOUND")
 
         arm_edge = find_arm_edge_point(img_path)
         if arm_edge:
             landmarks[day]['arm_edge'] = list(arm_edge)
-            print("  arm_edge: {arm_edge}")
+            print(f"  arm_edge: {arm_edge}")
         else:
             print("  arm_edge: NOT FOUND")
 
-    # Validation
-    print("\n" + "="*100)
     print("VALIDATION:")
-    print("="*100)
+    print(landmarks)
 
     valid_count = 0
     for feature in ['marker', 'vein', 'freckle', 'arm_edge']:
+        print (f"Analysing {feature}s")
         found_in = [day for day in ['day0', 'day1', 'day2'] if feature in landmarks.get(day, {})]
+        printf ("{feature} found in {found_in}")
         if len(found_in) == 3:
-            print("✓ {feature:12s}: Found in all 3 images")
+            print(f"✓ {feature:12s}: Found in all 3 images")
             valid_count += 1
         else:
-            print("✗ {feature:12s}: Only found in {found_in}")
+            print(f"✗ {feature:12s}: Only found in {found_in}")
 
-    if valid_count >= 3:
-        output_file = "landmarks_cv.json"
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(landmarks, f, indent=2)
-        print("\n✓ Saved {valid_count} CV-detected landmarks to: {output_file}")
-    else:
-        print("\n✗ FAILED: Only {valid_count} features found in all 3 images")
+    try:
+        if valid_count >= 3:
+            output_file = "landmarks_cv.json"
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(landmarks, f, indent=2)
+            print(f"\n✓ Saved {valid_count} CV-detected landmarks to: {output_file}")
+        else:
+            print(f"\n✗ FAILED: Only {valid_count} features found in all 3 images")
+    except Exception as e:
+        print(f"Encountered exception {e} in hybrid_landmark_detection.py")
+        raise e
