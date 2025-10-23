@@ -7,12 +7,14 @@ import argparse
 import logging
 import math
 import sys
+import json
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw
+from PIL import Image as PILImage
 from scipy import ndimage
 from skimage import morphology, measure
 
@@ -591,11 +593,10 @@ def affine_register(
     # Try landmark-based registration if timepoint specified
     if src_timepoint is not None:
         try:
-            import json
 
             # Default to landmarks.json in current directory
             if landmarks_path is None:
-                landmarks_file = Path("landmarks.json")
+                landmarks_file = Path("config/landmarks.json")
             else:
                 landmarks_file = Path(landmarks_path)
 
@@ -953,7 +954,6 @@ def detect_papules_red(
         cv2.putText(debug_img, f"{i}", (cx + 10, cy - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
     # Save debug image
-    from PIL import Image as PILImage
     debug_pil = PILImage.fromarray(cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB))
     debug_output_path = Path("debug_candidates.jpg")
     debug_pil.save(debug_output_path, quality=95)
