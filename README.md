@@ -1,285 +1,240 @@
-# Pathergy Reaction Analysis Toolkit
+# Pathergy Test Alignment & Analysis Pipeline
 
-A lightweight, reproducible pipeline for analyzing pathergy test reactions from clinical photographs.
+A secure, automated pipeline for aligning and analyzing serial pathergy test images using anatomical landmark registration.
 
-This tool aligns serial images, detects papular responses, and generates overlays and longitudinal composites for visual interpretation.
+## 🔒 Security-First Implementation
 
-This would be based on the following test https://behcet-zentrum.de/fuer-patienten/ 
+This pipeline has been redesigned with security best practices:
+- ✅ Environment variable API key storage (no plaintext files)
+- ✅ Path traversal protection with directory whitelisting
+- ✅ Input validation and automatic image resizing (max 884×884)
+- ✅ Secure API calls using `requests` library with retries
+- ✅ No hardcoded paths or credentials
 
----
+## 🚀 Quick Start
 
-## Overview
+### Prerequisites
+- Python >= 3.10
+- Anthropic API key (Claude Sonnet 4.5)
 
-Purpose:
-Provide an automated way to verify, document, and visualize a positive pathergy reaction — a papule or pustule appearing 24–48 hours after sterile puncture, typically used in Behçet spectrum disease evaluation.
+### Installation
 
-Features:
-- Automatic detection of injection sites arranged lengthwise along the forearm axis (per clinical protocol).
-- Structural feature-based registration using arm outline, elbow contours, and anatomical edges.
-- Comprehensive pre-processing pipeline for improved image quality:
-  - Illumination correction using LAB color space and CLAHE.
-  - Edge-preserving noise reduction via bilateral filtering.
-  - Color normalization for consistent analysis.
-  - Optional unsharp masking for edge enhancement.
-- Alignment of all frames to a Day-0 baseline forearm using edge-enhanced SIFT + RANSAC.
-- Generation of:
-  - Individual annotated overlays for each timepoint.
-  - A composite timeline panel showing morphological progression.
-  - Morphological mapping visualizations (HSV masks, contours, SIFT features).
-  - Structural feature visualizations (arm outline edges, principal axis orientation).
-  - Diagnostic panels showing all processing stages.
-
----
-
-## Installation
-
-```
+```bash
 git clone https://github.com/myztery-neuroimg/pathergytest.git
 cd pathergytest
-# Copy your files as named below or change the filenames here
 pip install -r requirements.txt
+
+# Set your API key
+export ANTHROPIC_API_KEY='your-api-key-here'
 ```
 
-Requirements:
-- python >= 3.12
-- opencv-python
-- numpy
-- Pillow
+### Basic Usage
 
----
+```bash
+# Run with your images
+python3 run_alignment.py \
+    --baseline path/to/baseline.jpg \
+    --early path/to/day1.jpg \
+    --late path/to/day2.jpg \
+    --enable-preprocessing
 
-## Usage
+# Or use the test script
+./TEST_COMMAND.sh baseline.jpg day1.jpg day2.jpg
+```
 
-1. Prepare your images:
-   - day0_0h.png   (baseline at point of injection at 2 sites)
-   - day1_24h.png         (24 h)
-   - day2_48h.png         (48 h)
+## 📋 Features
 
-2. Run the pipeline:
+### Core Capabilities
+- **Anatomical Landmark Detection**: Uses Claude Sonnet 4.5 with thinking mode for precise landmark identification
+- **Automatic Image Alignment**: Registers day 1 and day 2 images to baseline using affine transformation
+- **Pathergy Site Tracking**: Detects test marks on baseline and tracks same locations across timepoints
+- **Security Hardened**: Input validation, path sanitization, secure API handling
 
-   **Basic usage:**
-   ```bash
-   python main.py \
-       --baseline day1_0h.png \
-       --early day1_24h.png \
-       --late day2_48h.png \
-       --output-dir outputs \
-       --log-level INFO
-   ```
+### Image Processing
+- **Intelligent Pre-cropping**: Automatically identifies and crops to forearm region
+- **Multi-stage Preprocessing**:
+  - Illumination correction (LAB color space + CLAHE)
+  - Bilateral filtering (edge-preserving noise reduction)
+  - Color normalization
+  - Optional unsharp masking
+- **Automatic Resizing**: Large images automatically resized to 884×884 while maintaining aspect ratio
 
-   **With pre-processing and morphological visualizations:**
-   ```bash
-   python main.py \
-       --baseline day1_0h.png \
-       --early day1_24h.png \
-       --late day2_48h.png \
-       --output-dir outputs \
-       --enable-preprocessing \
-       --generate-diagnostic-panels \
-       --save-morphological-overlays \
-       --log-level DEBUG
-   ```
+### Visualization Outputs
+- **Timeline Composite**: Side-by-side comparison showing pathergy test progression
+- **Tracked Sites**: Individual images with marked injection sites
+- **Diagnostic Panels**: Optional debug visualizations of processing stages
 
-   **Pre-processing options:**
-   - `--enable-preprocessing`: Enable comprehensive pre-processing pipeline (illumination correction, bilateral filtering, color normalization).
-   - `--enable-unsharp`: Enable unsharp masking for edge enhancement (requires `--enable-preprocessing`).
-   - `--illumination-clip FLOAT`: CLAHE clip limit for illumination correction (default: 2.0).
-   - `--bilateral-d INT`: Diameter of pixel neighborhood for bilateral filter (default: 9).
-   - `--bilateral-sigma-color INT`: Filter sigma in color space (default: 75).
-   - `--bilateral-sigma-space INT`: Filter sigma in coordinate space (default: 75).
+## 🏗️ Architecture
 
-   **Visualization options:**
-   - `--generate-diagnostic-panels`: Generate diagnostic visualization panels showing preprocessing and detection stages.
-   - `--save-morphological-overlays`: Save individual morphological overlay images (HSV masks, contours, SIFT features).
+### Main Components
 
-   **Other optional flags:**
-   - `--radius`: Adjust the lesion bounding box size (pixels, default: 22).
-   - `--padding`: Control spacing between montage panels (pixels, default: 20).
-   - `--content-threshold INT`: Pixel intensity threshold for shared visual-footprint detection (default: 5).
-   - `--content-kernel-size INT`: Morphological kernel size for shared visual-footprint detection (default: 7).
-   - `--content-min-component-area INT`: Minimum connected component area kept during detection (default: 1000).
+#### 1. `secure_landmark_extraction.py`
+Primary landmark extraction with full security measures:
+- Environment variable API key loading
+- Path validation against whitelist
+- Image size/dimension validation
+- Automatic resizing for large images
+- Secure API calls with retry logic
 
-3. Outputs:
-   - `outputs/pathergy_timeline_composite.jpg` - Main composite timeline showing Day 0 puncture sites tracked across all timepoints
+```python
+python3 secure_landmark_extraction.py \
+    --baseline img1.jpg \
+    --early img2.jpg \
+    --late img3.jpg \
+    --output landmarks.json
+```
 
-   **Diagnostic panels** (if `--generate-diagnostic-panels` is used):
-   - `outputs/baseline_diagnostic_panel.jpg` - Baseline detection process (original, preprocessed, HSV mask, detected sites)
-   - `outputs/early_diagnostic_panel.jpg` - Day 1 tracking (original, warped, SIFT features, tracked sites)
-   - `outputs/late_diagnostic_panel.jpg` - Day 2+ tracking (original, warped, SIFT features, tracked sites)
+#### 2. `run_alignment.py`
+Clean runner using imported functions (no subprocess calls):
+- Direct function imports from `main.py`
+- Integrated landmark extraction
+- Full pipeline execution
 
-   **Morphological overlays** (if `--save-morphological-overlays` is used):
-   - `outputs/baseline_hsv_mask.jpg` - HSV-based red detection mask on baseline
-   - `outputs/baseline_structural_edges.jpg` - Structural edges (arm outline, elbow, creases) used for registration
-   - `outputs/baseline_arm_orientation.jpg` - Detected arm principal axis (lengthwise direction)
-   - `outputs/baseline_scale_calibration.jpg` - Scale calibration showing markers, arm width, and calculated px/cm
-   - `outputs/baseline_contours_detected.jpg` - Detected puncture sites on Day 0
-   - `outputs/early_tracked_sites.jpg` - Day 0 sites tracked to Day 1 image
-   - `outputs/late_tracked_sites.jpg` - Day 0 sites tracked to Day 2+ image
-   - `outputs/early_sift_features.jpg` - SIFT keypoints used for Day 1 alignment
-   - `outputs/late_sift_features.jpg` - SIFT keypoints used for Day 2+ alignment
+#### 3. `main.py`
+Core alignment and detection logic:
+- Pre-crop to forearm region
+- VLM landmark-based registration
+- Pathergy site detection
+- Montage generation
 
-Each overlay marks the same papule pair aligned to the Day-1 contour, showing their evolution over time. Logging provides traceability for each processing stage.
+## 🔐 Security Features
 
----
+### API Key Management
+```bash
+# Preferred: Environment variable
+export ANTHROPIC_API_KEY='your-key-here'
 
-## Methodology
+# Fallback: File (with warning)
+echo 'your-key' > ~/.ANTHROPIC_API_KEY
+```
 
-### Pipeline Order (Critical for Accuracy)
+### Path Validation
+- Whitelist of allowed directories
+- Symlink resolution to prevent traversal
+- File extension validation (.jpg, .jpeg, .png, .bmp, .tiff)
+- File size limits (50MB max)
 
-The pipeline executes in this specific order to ensure accurate tracking:
+### Input Validation
+- Maximum image dimensions: 8848×8848
+- Automatic resizing to 884×884 for large images
+- Image verification using PIL before processing
+- Sanitized error messages (no sensitive data exposure)
 
-1. **Load Images**: Load Day 0, Day 1, and Day 2+ images
-2. **Intelligent Pre-Crop**: Independently identify forearm region in each image using multi-color-space skin segmentation (HSV + YCrCb)
-   - Removes background noise, hands, elbows from each image independently
-   - Adds 15% safety margin to preserve features for registration
-   - Handles unaligned images (different rotations/positions/scales)
-3. **Pre-process** (optional): Apply illumination correction, bilateral filtering, color normalization on pre-cropped images
-4. **Register**: Align pre-cropped follow-up images to pre-cropped baseline using structural feature-based SIFT + RANSAC
-   - Canny edge detection identifies arm outline, elbow contours, skin creases
-   - SIFT applied to structural edges for registration based on arm geometry
-   - Cleaner feature matching focused on stable anatomical structure
-   - Fallback to full-image SIFT if edge-based detection fails
-5. **Warp**: Transform follow-up images to baseline coordinate frame
-6. **Refine Shared Region** (optional): Final refinement to crop aligned images to exact shared forearm region
-7. **Detect +/- Markers**: Identify physician-drawn markers to establish test site location
-8. **Calibrate Scale**: Measure arm width and calculate pixels per cm (typical forearm: 7 cm)
-9. **Compute Local Arm Orientation**: PCA on skin near markers to get arm axis at test site
-10. **Detect Puncture Sites**: Detect Day 0 puncture sites on refined baseline image only
-    - Searches within 5 cm of markers using calibrated scale
-    - Uses real-world spacing (2-3 cm) converted to pixels
-    - Finds two injection sites arranged PARALLEL to local arm axis
-    - Scores pairs heavily on alignment with local arm orientation (5× weight)
-    - Matches clinical pathergy test protocol
-11. **Track Sites**: Use the same Day 0 coordinates across all aligned, refined timepoints
+## 📊 Pipeline Workflow
 
-This order is critical because:
-- **Intelligent pre-crop BEFORE registration**: Removes confounding features (hands, background) that create false SIFT matches, while keeping enough forearm detail for alignment
-- **Independent skin segmentation**: Each image analyzed separately to find its own forearm region, regardless of rotation/position
-- **Safety margin**: 15% expansion ensures SIFT has enough overlapping features between images for robust registration
-- **Preprocessing after pre-crop**: Illumination correction helps edge detection quality, applied to relevant anatomy only
-- **Structural feature registration**: Edge-based SIFT focuses on stable anatomical geometry (arm outline, elbow) not variable skin appearance
-  - More robust to lighting changes (edges remain constant)
-  - Prioritizes arm STRUCTURE over interior texture
-  - Better alignment for tracking anatomical locations over time
-- **Optional final refinement**: Additional crop to exact shared region after alignment
-- **Marker detection establishes test site**: Identifies where physician marked the test location
-- **Geomorphological scale calibration**: CRITICAL - cannot use fixed pixel distances
-  - Camera distance and zoom vary between images
-  - Must measure arm width to establish scale (pixels per cm)
-  - Converts real-world protocol (2-3 cm) to image-specific pixel distances
-  - Example: 210 px arm width → 30 px/cm → 2.5 cm spacing = 75 px
-- **Local orientation at test site**: Accounts for arm curvature; more accurate than global axis
-- **Marker-relative search**: Looks for sites only near markers (within 5 cm radius)
-- **Parallel to LOCAL arm axis**: Sites must align with arm direction at that specific location
-- **Stable coordinates**: All images in same coordinate space; Day 0 puncture coordinates apply directly
+```
+1. Load Images
+   ↓
+2. Validate Paths & Resize if Needed
+   ↓
+3. Extract Anatomical Landmarks (Claude API)
+   ↓
+4. Pre-crop to Forearm Region
+   ↓
+5. Apply Preprocessing (Optional)
+   ↓
+6. Register Images Using Landmarks
+   ↓
+7. Detect Pathergy Sites on Baseline
+   ↓
+8. Track Sites Across Timepoints
+   ↓
+9. Generate Composite & Outputs
+```
+
+## 🛠️ Advanced Options
+
+### Preprocessing Parameters
+```bash
+--enable-preprocessing       # Enable all preprocessing
+--illumination-clip 2.0     # CLAHE clip limit
+--bilateral-d 9             # Bilateral filter diameter
+--bilateral-sigma-color 75  # Color space sigma
+--bilateral-sigma-space 75  # Coordinate space sigma
+```
+
+### Visualization Options
+```bash
+--generate-diagnostic-panels    # Debug visualizations
+--save-morphological-overlays  # Individual overlays
+--radius 50                    # Detection radius (pixels)
+```
+
+### Logging Levels
+```bash
+--log-level DEBUG  # Verbose debugging
+--log-level INFO   # Standard output
+--log-level ERROR  # Errors only
+```
+
+## 📁 Output Files
+
+```
+outputs/
+├── pathergy_timeline_composite.jpg  # Main result
+├── baseline_tracked_sites.jpg       # Day 0 with marks
+├── early_tracked_sites.jpg          # Day 1 aligned
+├── late_tracked_sites.jpg           # Day 2 aligned
+└── landmarks.json                   # Detected landmarks
+```
+
+## 🧪 Testing
+
+```bash
+# Run security checks
+python3 -m bandit -r .
+python3 -m safety check
+
+# Test with sample images
+./TEST_COMMAND.sh test_images/baseline.jpg \
+                  test_images/day1.jpg \
+                  test_images/day2.jpg
+```
+
+## 📚 Documentation
+
+### Core Documentation
+- [`SECURITY_REVIEW.md`](SECURITY_REVIEW.md) - Security audit and current vulnerability status
+- [`docs/TECHNICAL_METHODOLOGY.md`](docs/TECHNICAL_METHODOLOGY.md) - Detailed technical implementation
+- [`docs/CLINICAL_INTERPRETATION.md`](docs/CLINICAL_INTERPRETATION.md) - Clinical guide for pathergy test interpretation
 
 ### Technical Details
+- **Pipeline Order & Methodology** - See [Technical Methodology](docs/TECHNICAL_METHODOLOGY.md)
+- **Algorithm Parameters** - See [Technical Methodology](docs/TECHNICAL_METHODOLOGY.md#algorithm-parameters)
+- **Clinical Protocol** - See [Clinical Interpretation](docs/CLINICAL_INTERPRETATION.md#test-protocol)
+- **API Documentation** - See function docstrings in source files
 
-**Intelligent Pre-Crop (Skin Segmentation):**
-- **Multi-color-space approach**: Combines HSV and YCrCb color spaces for robust skin detection
-  - HSV: Detects skin hue (0-50°) regardless of brightness
-  - YCrCb: Detects skin chrominance (Cr: 133-173, Cb: 77-127) robust to illumination
-  - Logical AND of both masks for high-confidence skin pixels
-- **Morphological refinement**: Elliptical kernels (11×11) for closing/opening to remove noise
-- **Connected component analysis**: Identifies largest skin region (forearm) using scikit-image
-- **Bounding box with margin**: Adds 15% safety margin to preserve features for SIFT registration
-- **Independent processing**: Each image analyzed separately, handles rotation/translation/scale differences
+### Developer Notes
+- `GITHUB_AUTH_NOTES.md` - GitHub CLI authentication guide (in .gitignore)
 
-**Post-Alignment Refinement (Optional):**
-- Uses morphological operations on ALIGNED images to find exact shared forearm region
-- Computes intersection of content masks across all three aligned timepoints
-- Final crop to clean anatomical region
-- This is a refinement step after registration, not the primary cropping mechanism
+## ⚠️ Important Notes
 
-**Pre-processing** (optional):
-- **Illumination correction**: LAB color space conversion with CLAHE applied to L channel to normalize lighting conditions
-- **Bilateral filtering**: Edge-preserving noise reduction that smooths while maintaining sharp boundaries
-- **Color normalization**: Normalizes color channels to improve consistency across images taken under different lighting
-- **Unsharp masking**: Edge enhancement technique to improve feature detection and alignment
+1. **Clinical Use**: This tool is for research/educational purposes only. Not for diagnostic use.
+2. **API Costs**: Uses Claude Sonnet 4.5 API (~$3/$15 per million tokens)
+3. **Privacy**: Process images locally before API calls. Consider PHI implications.
+4. **Landmarks**: System uses anatomical features (veins, hair patterns) NOT test marks for alignment
 
-**Registration (Structural Feature-Based):**
-- **Edge-enhanced SIFT**: Uses Canny edge detection to identify structural features
-  - Detects arm outline, elbow contours, skin creases
-  - Applies SIFT to edge regions for registration based on arm STRUCTURE
-  - Prioritizes geometric anatomy over interior skin texture
-  - More robust to lighting variations (edges remain constant)
-- **Scale-Invariant Feature Transform**: Works on PRE-CROPPED images
-  - Focuses on forearm structural features only
-  - 15% safety margin ensures sufficient overlapping features
-  - Fallback to full-image SIFT if edge-based detection fails
-- **Affine transformation via RANSAC**: Robust estimation to align follow-up images to baseline frame
-- Handles rotation, translation, and scale differences between pre-cropped images
-- Uses preprocessed images if preprocessing is enabled (improves edge detection quality)
-- Benefits: Alignment based on stable anatomical structure, not variable skin appearance
+## 🤝 Contributing
 
-**Arm Orientation Detection:**
-- **Principal Component Analysis (PCA)**: Computes the long axis of the forearm
-  - Analyzes skin mask pixel coordinates
-  - Identifies principal direction (eigenvector with largest eigenvalue)
-  - Returns angle in degrees from horizontal
-- **Purpose**: Used to detect injection sites arranged LENGTHWISE along the arm
-- **Clinical relevance**: Pathergy test protocol requires sites parallel to arm axis (not perpendicular)
+1. Fork the repository
+2. Create feature branch (`git checkout -b feature/improvement`)
+3. Run security checks before committing
+4. Submit pull request with clear description
 
-**Geomorphological Scale Calibration:**
-- **Problem**: Camera distance and zoom vary between images; cannot use fixed pixel distances
-- **Solution**: Calibrate using anatomical features with known dimensions
-- **Marker Detection**:
-  - Detects physician-drawn +/- markers (pen ink or red marker)
-  - Combines grayscale thresholding and HSV color detection
-  - Identifies test site location as marker centroid
-  - Filters by area (>500 px) to distinguish from injection sites
-- **Arm Width Measurement**:
-  - Measures forearm width in pixels at test site y-coordinate
-  - Assumes typical forearm width: 7 cm
-  - Calculates pixels_per_cm = arm_width_px / 7.0
-  - Dynamically adapts to camera distance and image scale
-- **Real-World Distance Conversion**:
-  - Protocol spacing: 2-3 cm → converted to pixels using scale
-  - Search radius: 5 cm around markers → 5 * pixels_per_cm
-  - Example: If arm width is 210 px, scale is 30 px/cm, so 2.5 cm = 75 px
-- **Local Arm Orientation at Test Site**:
-  - PCA on skin pixels within 150 px radius of markers
-  - Computes LOCAL arm axis (accounts for curvature)
-  - More accurate than global orientation
+## 📄 License
 
-**Puncture Site Detection and Tracking:**
-- **Day 0 (Baseline)**: Scale-calibrated HSV segmentation with marker-relative search
-  - Detects red regions within 5 cm of markers
-  - Filters by size (30-500 px area, excludes large markers)
-  - Scores pairs based on:
-    1. Distance from ideal spacing (2.5 cm in real-world units)
-    2. Size similarity (both sites should be similar)
-    3. Circularity (both should be circular)
-    4. **Alignment with LOCAL arm axis** (5× weight - sites MUST be parallel)
-  - Selects best pair aligned parallel to arm at test site
-  - Logs detected spacing: "distance=2.5 cm (75.3 px), alignment=3.2° from local arm axis"
-- **Day 1-5+ (Follow-up)**: The same anatomical locations are tracked across all cropped, aligned images; no independent detection is performed
-- Tracks the evolution of the SAME puncture sites over time
-- Coordinates remain stable because all images are in the same aligned+cropped coordinate space
+MIT License - See LICENSE file for details
 
-**Visualization:**
-- **Standard output**: Uniform coordinate geometry with red bounding boxes (22 px radius) and side-by-side montage
-- **Morphological overlays**:
-  - HSV masks showing red detection regions
-  - Structural edge overlays (arm outline, elbow, creases used for registration)
-  - Arm orientation overlay (principal axis direction)
-  - Contour visualizations on cropped images
-  - SIFT keypoint displays
-- **Diagnostic panels**: 2×2 grids showing original, arm orientation/warped, SIFT features, and tracked sites
+## 🙏 Acknowledgments
+
+- Anthropic for Claude API
+- OpenCV and scikit-image communities
+- Behçet's disease research community
+
+## 📧 Contact
+
+For questions or issues, please open a GitHub issue.
 
 ---
-
-## Example Interpretation
-
-Timepoint | Morphology | Clinical Meaning
----------- | ----------- | ----------------
-Day 0 (~) | Baseline  | Only puncture site
-Day 1 (+24 h) | Papular / pustular | Autoimmune response
-Day 2 (+48 h) | Papular / pustular | Meets positivity threshold
-
----
-
-## Disclaimer
-
-For research and educational use only.
-This does not substitute for professional medical evaluation.
+*Last Updated: October 2025*
+*Version: 2.0 (Security Hardened)*

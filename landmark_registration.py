@@ -120,8 +120,7 @@ if __name__ == "__main__":
     early_path = "/Users/davidbrewster/Documents/Documents_Brewster/15 August 13_17.jpg"
     late_path = "/Users/davidbrewster/Documents/Documents_Brewster/16 August 10_04.jpg"
 
-    output_dir = Path("/Users/davidbrewster/Documents/workspace/2025/pathergytest/landmark_registration_output")
-    output_dir.mkdir(exist_ok=True)
+    output_dir = Path(".")  # Output to current directory
 
     print("="*100)
     print("LANDMARK-BASED AFFINE REGISTRATION")

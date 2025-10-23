@@ -127,16 +127,15 @@ if __name__ == "__main__":
     # Load baseline
     baseline_img = cv2.imread(baseline_path)
 
-    # Check if ECC results exist
-    ecc_early_path = Path("/Users/davidbrewster/Documents/workspace/2025/pathergytest/output_timeline/early_warped.png")
-    ecc_late_path = Path("/Users/davidbrewster/Documents/workspace/2025/pathergytest/output_timeline/late_warped.png")
+    # Check if ECC results exist (in current directory)
+    ecc_early_path = Path("early_warped_ecc.jpg")
+    ecc_late_path = Path("late_warped_ecc.jpg")
 
-    # Landmark results
-    landmark_early_path = Path("/Users/davidbrewster/Documents/workspace/2025/pathergytest/landmark_registration_output/early_warped_landmark.jpg")
-    landmark_late_path = Path("/Users/davidbrewster/Documents/workspace/2025/pathergytest/landmark_registration_output/late_warped_landmark.jpg")
+    # Landmark results (in current directory)
+    landmark_early_path = Path("early_warped_landmark.jpg")
+    landmark_late_path = Path("late_warped_landmark.jpg")
 
-    output_dir = Path("/Users/davidbrewster/Documents/workspace/2025/pathergytest/method_comparison")
-    output_dir.mkdir(exist_ok=True)
+    output_dir = Path(".")  # Output to current directory
 
     if not ecc_early_path.exists():
         print("\nWARNING: ECC results not found. Will compare landmark results only.")

@@ -108,7 +108,7 @@ def find_dark_freckle(image_path):
     freckle_candidates = []
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if 10 < area < 500:  # Freckle size range
+        if 10 < area < 50:  # Freckle size range
             M = cv2.moments(cnt)
             if M['m00'] > 0:
                 cx = int(M['m10'] / M['m00'])

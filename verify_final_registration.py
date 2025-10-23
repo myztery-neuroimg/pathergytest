@@ -62,7 +62,7 @@ if __name__ == "__main__":
 
     # Load pre-cropped images
     print(f"\n2. Loading pre-cropped images...")
-    output_dir = Path("output_timeline_fixed")
+    output_dir = Path(".")  # Use current directory
 
     baseline_img = cv2.imread(str(output_dir / "intermediate_baseline_precrop.jpg"))
     early_img = cv2.imread(str(output_dir / "intermediate_early_precrop.jpg"))
