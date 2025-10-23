@@ -295,7 +295,7 @@ def main():
             args.baseline, args.early, args.late, use_claude=True
         )
         import json
-        with open('landmarks.json', 'r', encoding='utf-8') as f:
+        with open('landmarks.json', 'w', encoding='utf-8') as f:
             json.dump(landmarks, f, indent=2)
         logging.info("Saved landmarks to landmarks.json")
 
