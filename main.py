@@ -8,7 +8,7 @@ import logging
 import math
 import sys
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -573,7 +573,7 @@ def affine_register(
     """Estimate an affine transform aligning ``src`` → ``dst`` using VLM-extracted landmarks.
 
     Uses corresponding anatomical landmarks (marker, vein, freckle, arm_edge) extracted by
-    a vision language model (gemma3:27b) to compute a robust affine transform. This handles
+    a vision language model to compute a robust affine transform. This handles
     different arm angles, poses, and lighting conditions much better than pixel-based methods.
 
     Args:
@@ -955,8 +955,9 @@ def detect_papules_red(
     # Save debug image
     from PIL import Image as PILImage
     debug_pil = PILImage.fromarray(cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB))
-    debug_pil.save("/Users/davidbrewster/Documents/Documents_Brewster/debug_candidates.jpg", quality=95)
-    logging.info("Saved debug candidate visualization to debug_candidates.jpg")
+    debug_output_path = Path("debug_candidates.jpg")
+    debug_pil.save(debug_output_path, quality=95)
+    logging.info("Saved debug candidate visualization to %s", debug_output_path)
 
     # Step 6: Find best pair aligned LENGTHWISE with local arm axis at test site
     # Use TRIANGULATION from three methods: HSV redness, contour properties, edge density
@@ -2187,4 +2188,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover - CLI entrypoint
     sys.exit(main())
-

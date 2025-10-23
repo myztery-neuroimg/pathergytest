@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Compare ECC vs Landmark-based registration approaches."""
 
+import argparse
+import json
+from pathlib import Path
+
 import cv2
 import numpy as np
-from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
 
 
 def load_image(path):
@@ -90,16 +92,16 @@ def create_overlay_comparison(baseline_img, ecc_warped, landmark_warped, alpha=0
     return comparison
 
 
-def compute_alignment_metrics(baseline_img, warped_img, landmarks_baseline, landmarks_warped):
+def compute_alignment_metrics(landmarks_baseline, landmarks_warped):
     """Compute quantitative alignment metrics."""
     # Convert landmarks to arrays
     baseline_pts = []
     warped_pts = []
 
-    for feature in ['marker', 'vein', 'freckle', 'arm_edge']:
-        if feature in landmarks_baseline and feature in landmarks_warped:
-            baseline_pts.append(landmarks_baseline[feature])
-            warped_pts.append(landmarks_warped[feature])
+    for feat in ['marker', 'vein', 'freckle', 'arm_edge']:
+        if feat in landmarks_baseline and feat in landmarks_warped:
+            baseline_pts.append(landmarks_baseline[feat])
+            warped_pts.append(landmarks_warped[feat])
 
     baseline_pts = np.array(baseline_pts, dtype=np.float32)
     warped_pts = np.array(warped_pts, dtype=np.float32)
@@ -117,25 +119,31 @@ def compute_alignment_metrics(baseline_img, warped_img, landmarks_baseline, land
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Compare ECC vs Landmark registration methods")
+    parser.add_argument("baseline", help="Path to baseline (day 0) image")
+    parser.add_argument("--landmarks", help="Path to landmarks.json file (if using landmark metrics)")
+    parser.add_argument("--results-dir", default=".", help="Directory containing registration results")
+    parser.add_argument("--output-dir", default=".", help="Directory to save comparison outputs")
+    args = parser.parse_args()
+
+    results_dir = Path(args.results_dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(exist_ok=True)
+
     print("="*100)
     print("REGISTRATION METHOD COMPARISON")
     print("="*100)
 
-    # Paths
-    baseline_path = "/Users/davidbrewster/Documents/Documents_Brewster/14 August 10_10.jpg"
-
     # Load baseline
-    baseline_img = cv2.imread(baseline_path)
+    baseline_img = cv2.imread(args.baseline)
 
-    # Check if ECC results exist (in current directory)
-    ecc_early_path = Path("early_warped_ecc.jpg")
-    ecc_late_path = Path("late_warped_ecc.jpg")
+    # Check if ECC results exist
+    ecc_early_path = results_dir / "early_warped_ecc.jpg"
+    ecc_late_path = results_dir / "late_warped_ecc.jpg"
 
-    # Landmark results (in current directory)
-    landmark_early_path = Path("early_warped_landmark.jpg")
-    landmark_late_path = Path("late_warped_landmark.jpg")
-
-    output_dir = Path(".")  # Output to current directory
+    # Landmark results
+    landmark_early_path = results_dir / "early_warped_landmark.jpg"
+    landmark_late_path = results_dir / "late_warped_landmark.jpg"
 
     if not ecc_early_path.exists():
         print("\nWARNING: ECC results not found. Will compare landmark results only.")
@@ -147,8 +155,8 @@ if __name__ == "__main__":
         landmark_early = load_image(landmark_early_path)
         landmark_late = load_image(landmark_late_path)
 
-        print(f"   ✓ Loaded ECC results")
-        print(f"   ✓ Loaded Landmark results")
+        print("   ✓ Loaded ECC results")
+        print("   ✓ Loaded Landmark results")
 
         # Create comparisons
         print("\n2. Creating comparison visualizations...")
@@ -157,13 +165,13 @@ if __name__ == "__main__":
         early_comparison = create_comparison_grid(baseline_img, ecc_early, landmark_early,
                                                   "Day 1 Registration Comparison")
         cv2.imwrite(str(output_dir / "early_method_comparison.jpg"), early_comparison)
-        print(f"   ✓ Saved early timepoint comparison")
+        print("   ✓ Saved early timepoint comparison")
 
         # Late timepoint comparison
         late_comparison = create_comparison_grid(baseline_img, ecc_late, landmark_late,
                                                 "Day 2 Registration Comparison")
         cv2.imwrite(str(output_dir / "late_method_comparison.jpg"), late_comparison)
-        print(f"   ✓ Saved late timepoint comparison")
+        print("   ✓ Saved late timepoint comparison")
 
         # Overlay comparisons
         early_overlay_comp = create_overlay_comparison(baseline_img, ecc_early, landmark_early)
@@ -171,35 +179,35 @@ if __name__ == "__main__":
 
         cv2.imwrite(str(output_dir / "early_overlay_comparison.jpg"), early_overlay_comp)
         cv2.imwrite(str(output_dir / "late_overlay_comparison.jpg"), late_overlay_comp)
-        print(f"   ✓ Saved overlay comparisons")
+        print("   ✓ Saved overlay comparisons")
 
     # Load landmarks for quantitative comparison
     print("\n3. Computing alignment metrics...")
-    import json
-    with open("/Users/davidbrewster/Documents/workspace/2025/pathergytest/landmarks.json", 'r') as f:
-        landmarks = json.load(f)
+    if args.landmarks:
+        with open(args.landmarks, 'r', encoding='utf-8') as f:
+            landmarks = json.load(f)
 
-    # For landmark method, landmarks should be perfectly aligned (by design)
-    # But let's verify
-    print("\nLandmark Registration - Target Alignment:")
-    print("  (These should be near-zero since we register TO these points)")
+        # For landmark method, landmarks should be perfectly aligned (by design)
+        # But let's verify
+        print("\nLandmark Registration - Target Alignment:")
+        print("  (These should be near-zero since we register TO these points)")
 
-    baseline_landmarks = landmarks['day0']
-    early_landmarks = landmarks['day1']
-    late_landmarks = landmarks['day2']
+        baseline_landmarks = landmarks['day0']
+        early_landmarks = landmarks['day1']
+        late_landmarks = landmarks['day2']
 
-    # After registration, day1 and day2 landmarks should map to day0 positions
-    # Let's just document the source offsets
-    print("\n  Source Offsets (before registration):")
-    for feature in ['marker', 'vein', 'freckle', 'arm_edge']:
-        b = np.array(baseline_landmarks[feature])
-        e = np.array(early_landmarks[feature])
-        l = np.array(late_landmarks[feature])
+        # After registration, day1 and day2 landmarks should map to day0 positions
+        # Let's just document the source offsets
+        print("\n  Source Offsets (before registration):")
+        for feature in ['marker', 'vein', 'freckle', 'arm_edge']:
+            b = np.array(baseline_landmarks[feature])
+            e = np.array(early_landmarks[feature])
+            l = np.array(late_landmarks[feature])
 
-        early_offset = np.linalg.norm(e - b)
-        late_offset = np.linalg.norm(l - b)
+            early_offset = np.linalg.norm(e - b)
+            late_offset = np.linalg.norm(l - b)
 
-        print(f"    {feature:12s}: Day1={early_offset:6.2f}px, Day2={late_offset:6.2f}px from baseline")
+            print(f"    {feature:12s}: Day1={early_offset:6.2f}px, Day2={late_offset:6.2f}px from baseline")
 
     print("\n" + "="*100)
     print("COMPARISON SUMMARY")

@@ -4,7 +4,6 @@
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw
-from pathlib import Path
 
 # Load the cropped baseline image from pipeline
 baseline_cropped = cv2.imread("output_debug/intermediate_baseline_precrop.jpg")

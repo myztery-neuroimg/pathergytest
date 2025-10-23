@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Use SIFT + RANSAC for automatic feature-based registration."""
 
+import argparse
 import cv2
 import numpy as np
 from pathlib import Path
@@ -95,9 +96,15 @@ def visualize_matches(src_path, dst_path, matches, kp1, kp2, output_path):
 
 
 if __name__ == "__main__":
-    baseline_path = "/Users/davidbrewster/Documents/Documents_Brewster/14 August 10_10.jpg"
-    early_path = "/Users/davidbrewster/Documents/Documents_Brewster/15 August 13_17.jpg"
-    late_path = "/Users/davidbrewster/Documents/Documents_Brewster/16 August 10_04.jpg"
+    parser = argparse.ArgumentParser(description="SIFT + RANSAC registration for pathergy test images")
+    parser.add_argument("baseline", help="Path to baseline (day 0) image")
+    parser.add_argument("early", help="Path to early (day 1) image")
+    parser.add_argument("late", help="Path to late (day 2) image")
+    args = parser.parse_args()
+
+    baseline_path = args.baseline
+    early_path = args.early
+    late_path = args.late
 
     print("="*100)
     print("SIFT + RANSAC REGISTRATION")
@@ -165,7 +172,7 @@ if __name__ == "__main__":
         }
 
         import json
-        with open("sift_transforms.json", 'w') as f:
+        with open("sift_transforms.json", '0', encoding='utf-8') as f:
             json.dump(transforms, f, indent=2)
 
         print("  ✓ Saved sift_transforms.json")

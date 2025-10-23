@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Comprehensive visual comparison of ALL registration methods."""
 
-import cv2
-import numpy as np
+import argparse
 import json
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
-import sys
+
+import cv2
+import numpy as np
+from PIL import Image
 
 
 def load_image(path):
@@ -251,20 +252,25 @@ def create_comparison_panel(baseline_img, early_warped_dict, late_warped_dict,
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Comprehensive registration method comparison")
+    parser.add_argument("baseline", help="Path to baseline (day 0) image")
+    parser.add_argument("early", help="Path to early (day 1) image")
+    parser.add_argument("late", help="Path to late (day 2) image")
+    parser.add_argument("--output-dir", default=".", help="Directory to save output images")
+    args = parser.parse_args()
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(exist_ok=True)
+
     print("="*100)
     print("COMPREHENSIVE REGISTRATION COMPARISON")
     print("="*100)
 
-    # Paths
-    baseline_path = "/Users/davidbrewster/Documents/Documents_Brewster/14 August 10_10.jpg"
-    early_path = "/Users/davidbrewster/Documents/Documents_Brewster/15 August 13_17.jpg"
-    late_path = "/Users/davidbrewster/Documents/Documents_Brewster/16 August 10_04.jpg"
-
     # Load images
     print("\n1. Loading images...")
-    baseline_img = load_image(baseline_path)
-    early_img = load_image(early_path)
-    late_img = load_image(late_path)
+    baseline_img = load_image(args.baseline)
+    early_img = load_image(args.early)
+    late_img = load_image(args.late)
 
     h, w = baseline_img.shape[:2]
     print(f"   Image size: {w}×{h}")
@@ -304,7 +310,7 @@ if __name__ == "__main__":
     print("\n4. VLM Landmark Registration...")
     landmarks_file = Path("landmarks.json")
     if landmarks_file.exists():
-        with open(landmarks_file, 'r') as f:
+        with open(landmarks_file, '0', encoding='utf-8') as f:
             landmarks = json.load(f)
 
         print("   Day 1 → Day 0...")
@@ -322,12 +328,12 @@ if __name__ == "__main__":
     # 3. SIFT Masked Registration
     print("\n5. SIFT Masked Registration...")
     print("   Day 1 → Day 0...")
-    M_sift_early = sift_register_masked(early_path, baseline_path)
+    M_sift_early = sift_register_masked(args.early, args.baseline)
     if M_sift_early is not None:
         early_warped['SIFT'] = cv2.warpAffine(early_img, M_sift_early, (w, h))
 
     print("   Day 2 → Day 0...")
-    M_sift_late = sift_register_masked(late_path, baseline_path)
+    M_sift_late = sift_register_masked(args.late, args.baseline)
     if M_sift_late is not None:
         late_warped['SIFT'] = cv2.warpAffine(late_img, M_sift_late, (w, h))
 

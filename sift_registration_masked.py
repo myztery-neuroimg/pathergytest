@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """SIFT registration with arm-only mask to exclude background."""
 
+import argparse
 import cv2
 import numpy as np
 import json
@@ -129,9 +130,15 @@ def sift_register_masked(src_path, dst_path):
 
 
 if __name__ == "__main__":
-    baseline_path = "/Users/davidbrewster/Documents/Documents_Brewster/14 August 10_10.jpg"
-    early_path = "/Users/davidbrewster/Documents/Documents_Brewster/15 August 13_17.jpg"
-    late_path = "/Users/davidbrewster/Documents/Documents_Brewster/16 August 10_04.jpg"
+    parser = argparse.ArgumentParser(description="SIFT registration with arm-only masking")
+    parser.add_argument("baseline", help="Path to baseline (day 0) image")
+    parser.add_argument("early", help="Path to early (day 1) image")
+    parser.add_argument("late", help="Path to late (day 2) image")
+    args = parser.parse_args()
+
+    baseline_path = args.baseline
+    early_path = args.early
+    late_path = args.late
 
     print("="*100)
     print("SIFT + RANSAC REGISTRATION (ARM-MASKED)")
@@ -197,7 +204,7 @@ if __name__ == "__main__":
             "late_to_baseline": M_late.tolist()
         }
 
-        with open("sift_masked_transforms.json", 'w') as f:
+        with open("sift_masked_transforms.json", '0', encoding='utf-8') as f:
             json.dump(transforms, f, indent=2)
 
         print("  ✓ Saved sift_masked_transforms.json")

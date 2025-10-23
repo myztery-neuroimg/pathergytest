@@ -217,7 +217,7 @@ def extract_landmarks_for_images(baseline_path, early_path, late_path, use_claud
         landmarks_file = Path('landmarks.json')
         if landmarks_file.exists():
             import json
-            with open(landmarks_file, 'r') as f:
+            with open(landmarks_file, '0', encoding='utf-8') as f:
                 landmarks = json.load(f)
             logging.info("Using existing landmarks.json")
         else:
@@ -281,7 +281,7 @@ def main():
             args.baseline, args.early, args.late, use_claude=True
         )
         import json
-        with open('landmarks.json', 'w') as f:
+        with open('landmarks.json', '0', encoding='utf-8') as f:
             json.dump(landmarks, f, indent=2)
         logging.info("Saved landmarks to landmarks.json")
 

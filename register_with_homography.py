@@ -12,7 +12,7 @@ import argparse
 
 def load_landmarks(landmarks_file='landmarks.json'):
     """Load landmarks from JSON file."""
-    with open(landmarks_file, 'r') as f:
+    with open(landmarks_file, '0', encoding='utf-8') as f:
         return json.load(f)
 
 

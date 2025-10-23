@@ -250,7 +250,7 @@ def main():
     late = Image.open(args.late).convert('RGB')
 
     # Load landmarks
-    with open(args.landmarks, 'r') as f:
+    with open(args.landmarks, '0', encoding='utf-8') as f:
         landmarks = json.load(f)
 
     # Register based on method

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Verify that landmarks are correctly aligned in the final pipeline output."""
 
+import argparse
 import cv2
 import json
 import numpy as np
+from pathlib import Path
 from PIL import Image, ImageDraw
 
 
@@ -39,14 +41,30 @@ def draw_landmarks_adjusted(img_array, landmarks, day, crop_bbox, color='green')
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Verify pipeline landmark alignment")
+    parser.add_argument("landmarks", help="Path to landmarks.json file")
+    parser.add_argument("pipeline_dir", help="Directory containing pipeline output (intermediate_*_precrop.jpg files)")
+    parser.add_argument("--baseline-bbox", nargs=4, type=int, default=[0, 66, 702, 1152],
+                        help="Baseline crop bounding box (left top right bottom)")
+    parser.add_argument("--early-bbox", nargs=4, type=int, default=[0, 67, 702, 1145],
+                        help="Early crop bounding box (left top right bottom)")
+    parser.add_argument("--late-bbox", nargs=4, type=int, default=[0, 66, 702, 1150],
+                        help="Late crop bounding box (left top right bottom)")
+    parser.add_argument("--output-dir", default=".", help="Directory to save output images")
+    args = parser.parse_args()
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(exist_ok=True)
+    pipeline_dir = Path(args.pipeline_dir)
+
     print("="*100)
     print("VERIFYING PIPELINE LANDMARK ALIGNMENT")
     print("="*100)
 
-    # Crop bboxes from pipeline output (from logs)
-    baseline_bbox = (0, 66, 702, 1152)
-    early_bbox = (0, 67, 702, 1145)
-    late_bbox = (0, 66, 702, 1150)
+    # Crop bboxes from args
+    baseline_bbox = tuple(args.baseline_bbox)
+    early_bbox = tuple(args.early_bbox)
+    late_bbox = tuple(args.late_bbox)
 
     print(f"\n1. Pre-crop bounding boxes:")
     print(f"   Baseline: {baseline_bbox}")
@@ -54,7 +72,7 @@ if __name__ == "__main__":
     print(f"   Late: {late_bbox}")
 
     # Load landmarks
-    with open("/Users/davidbrewster/Documents/workspace/2025/pathergytest/landmarks.json", 'r') as f:
+    with open(args.landmarks, 'r', encoding='utf-8') as f:
         landmarks = json.load(f)
 
     print(f"\n2. VLM-extracted landmarks (original image coordinates):")
@@ -66,13 +84,13 @@ if __name__ == "__main__":
     # Load pre-cropped images
     print(f"\n3. Loading pre-cropped images from pipeline...")
     baseline_precrop = load_intermediate_image(
-        "/Users/davidbrewster/Documents/workspace/2025/pathergytest/output_timeline_fixed/intermediate_baseline_precrop.jpg"
+        pipeline_dir / "intermediate_baseline_precrop.jpg"
     )
     early_precrop = load_intermediate_image(
-        "/Users/davidbrewster/Documents/workspace/2025/pathergytest/output_timeline_fixed/intermediate_early_precrop.jpg"
+        pipeline_dir / "intermediate_early_precrop.jpg"
     )
     late_precrop = load_intermediate_image(
-        "/Users/davidbrewster/Documents/workspace/2025/pathergytest/output_timeline_fixed/intermediate_late_precrop.jpg"
+        pipeline_dir / "intermediate_late_precrop.jpg"
     )
 
     print(f"   Baseline precrop: {baseline_precrop.shape}")
@@ -85,9 +103,9 @@ if __name__ == "__main__":
     early_marked = draw_landmarks_adjusted(early_precrop.copy(), landmarks, 'day1', early_bbox, 'blue')
     late_marked = draw_landmarks_adjusted(late_precrop.copy(), landmarks, 'day2', late_bbox, 'orange')
 
-    cv2.imwrite("/Users/davidbrewster/Documents/workspace/2025/pathergytest/debug_pipeline_baseline_landmarks.jpg", baseline_marked)
-    cv2.imwrite("/Users/davidbrewster/Documents/workspace/2025/pathergytest/debug_pipeline_early_landmarks.jpg", early_marked)
-    cv2.imwrite("/Users/davidbrewster/Documents/workspace/2025/pathergytest/debug_pipeline_late_landmarks.jpg", late_marked)
+    cv2.imwrite(str(output_dir / "debug_pipeline_baseline_landmarks.jpg"), baseline_marked)
+    cv2.imwrite(str(output_dir / "debug_pipeline_early_landmarks.jpg"), early_marked)
+    cv2.imwrite(str(output_dir / "debug_pipeline_late_landmarks.jpg"), late_marked)
     print("   ✓ Saved pre-cropped images with adjusted landmarks")
 
     # Compute adjusted landmark coordinates
@@ -116,7 +134,7 @@ if __name__ == "__main__":
     cv2.putText(composite, "Day 1 - Blue Landmarks", (new_w + 10, 30), font, 0.8, (0, 0, 255), 2)
     cv2.putText(composite, "Day 2 - Orange Landmarks", (2*new_w + 10, 30), font, 0.8, (0, 165, 255), 2)
 
-    cv2.imwrite("/Users/davidbrewster/Documents/workspace/2025/pathergytest/debug_pipeline_landmarks_composite.jpg", composite)
+    cv2.imwrite(str(output_dir / "debug_pipeline_landmarks_composite.jpg"), composite)
     print("   ✓ Saved verification composite")
 
     print("\n" + "="*100)

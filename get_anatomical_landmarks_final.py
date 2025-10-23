@@ -4,13 +4,14 @@ Final script to get proper anatomical landmarks using Claude API.
 Uses pre-cropped images and focuses on anatomical features only.
 """
 
+import argparse
 import base64
 import json
-import requests
-from pathlib import Path
-import argparse
 import logging
+from pathlib import Path
+
 import numpy as np
+import requests
 
 
 def encode_image(image_path):
@@ -121,10 +122,10 @@ Provide coordinates as a JSON object with this exact structure:
                 if item.get('type') == 'text':
                     return item['text']
         return ""
-    else:
-        error_msg = response.json() if response.content else response.text
-        print(f"API Error Response: {error_msg}")
-        raise Exception(f"API error: {response.status_code}")
+
+    error_msg = response.json() if response.content else response.text
+    print(f"API Error Response: {error_msg}")
+    raise ValueError(f"API error: {response.status_code}")
 
 
 def parse_landmarks(response):
@@ -164,6 +165,7 @@ def parse_landmarks(response):
 
 
 def main():
+    """Main function to extract anatomical landmarks from images."""
     parser = argparse.ArgumentParser()
     parser.add_argument('--baseline', required=True, help='Baseline pre-cropped image')
     parser.add_argument('--early', required=True, help='Early pre-cropped image')
@@ -208,10 +210,10 @@ def main():
             print(f"{feature}: Day0→Day1: {dist_01:.1f}px, Day0→Day2: {dist_02:.1f}px")
 
     # Save
-    with open(args.output, 'w') as f:
+    with open(args.output, 'w', encoding='utf-8') as f:
         json.dump(landmarks, f, indent=2)
 
-    logging.info(f"Saved landmarks to {args.output}")
+    logging.info("Saved landmarks to %s", args.output)
 
 
 if __name__ == '__main__':

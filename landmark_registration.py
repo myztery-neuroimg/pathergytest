@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """Landmark-based affine registration using VLM-extracted corresponding points."""
 
+import argparse
 import json
+from pathlib import Path
+
 import cv2
 import numpy as np
-from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 
 def load_landmarks(json_path: str) -> dict:
     """Load landmarks from JSON file."""
-    with open(json_path, 'r') as f:
-        landmarks = json.load(f)
-    return landmarks
+    with open(json_path, 'r', encoding='utf-8') as f:
+        landmark_data = json.load(f)
+    return landmark_data
 
 
 def landmarks_to_points(landmarks: dict, day: str) -> np.ndarray:
@@ -114,13 +116,16 @@ def create_overlay(baseline_img: np.ndarray, warped_img: np.ndarray, alpha: floa
 
 
 if __name__ == "__main__":
-    # Paths
-    landmarks_path = "/Users/davidbrewster/Documents/workspace/2025/pathergytest/landmarks.json"
-    baseline_path = "/Users/davidbrewster/Documents/Documents_Brewster/14 August 10_10.jpg"
-    early_path = "/Users/davidbrewster/Documents/Documents_Brewster/15 August 13_17.jpg"
-    late_path = "/Users/davidbrewster/Documents/Documents_Brewster/16 August 10_04.jpg"
+    parser = argparse.ArgumentParser(description="Landmark-based affine registration")
+    parser.add_argument("baseline", help="Path to baseline (day 0) image")
+    parser.add_argument("early", help="Path to early (day 1) image")
+    parser.add_argument("late", help="Path to late (day 2) image")
+    parser.add_argument("landmarks", help="Path to landmarks.json file")
+    parser.add_argument("--output-dir", default=".", help="Directory to save output images")
+    args = parser.parse_args()
 
-    output_dir = Path(".")  # Output to current directory
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(exist_ok=True)
 
     print("="*100)
     print("LANDMARK-BASED AFFINE REGISTRATION")
@@ -128,14 +133,14 @@ if __name__ == "__main__":
 
     # Load landmarks
     print("\n1. Loading landmarks...")
-    landmarks = load_landmarks(landmarks_path)
+    landmarks = load_landmarks(args.landmarks)
     print(f"   Loaded landmarks for {len(landmarks)} timepoints")
 
     # Load images
     print("\n2. Loading images...")
-    baseline_img = cv2.imread(baseline_path)
-    early_img = cv2.imread(early_path)
-    late_img = cv2.imread(late_path)
+    baseline_img = cv2.imread(args.baseline)
+    early_img = cv2.imread(args.early)
+    late_img = cv2.imread(args.late)
 
     print(f"   Baseline: {baseline_img.shape}")
     print(f"   Early: {early_img.shape}")

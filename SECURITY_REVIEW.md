@@ -155,7 +155,8 @@ response = requests.post("https://api.anthropic.com/v1/messages", ...)
 
 **Issue**: Debug images and logs saved to disk
 ```python
-debug_pil.save("/Users/davidbrewster/Documents/Documents_Brewster/debug_candidates.jpg")
+debug_output_path = Path("debug_candidates.jpg")
+debug_pil.save(debug_output_path, quality=95)
 ```
 
 **Recommendations**:
@@ -164,11 +165,13 @@ debug_pil.save("/Users/davidbrewster/Documents/Documents_Brewster/debug_candidat
 3. Clean up temporary files after processing
 
 ### 9. Hardcoded Paths
-**Location**: Various debug and test files
+**Location**: Various debug and test files (FIXED)
 
-**Issue**: Hardcoded absolute paths
+**Issue**: Hardcoded absolute paths have been removed
 ```python
-debug_pil.save("/Users/davidbrewster/Documents/Documents_Brewster/debug_candidates.jpg")
+# Fixed: Now uses relative paths or command-line arguments
+debug_output_path = Path("debug_candidates.jpg")
+debug_pil.save(debug_output_path, quality=95)
 ```
 
 **Recommendations**:

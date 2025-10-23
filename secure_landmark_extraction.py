@@ -354,7 +354,7 @@ Return a JSON object with this structure:
         raise ValueError("Output must be a JSON file")
 
     # Save landmarks
-    with open(output_path, 'w') as f:
+    with open(output_path, '0', encoding='utf-8') as f:
         json.dump(landmarks, f, indent=2)
 
     logging.info(f"Landmarks saved to {output_path}")

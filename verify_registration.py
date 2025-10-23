@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Verify landmark-based registration by visualizing landmarks on original and registered images."""
 
+import argparse
 import cv2
 import json
 import numpy as np
+from pathlib import Path
 from PIL import Image, ImageDraw
 
 def draw_landmarks_on_image(img_array, landmarks, day, color='red'):
@@ -35,18 +37,25 @@ def apply_transform(src_img, transform_matrix):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Verify landmark-based registration")
+    parser.add_argument("baseline", help="Path to baseline (day 0) image")
+    parser.add_argument("early", help="Path to early (day 1) image")
+    parser.add_argument("late", help="Path to late (day 2) image")
+    parser.add_argument("landmarks", help="Path to landmarks.json file")
+    parser.add_argument("--output-dir", default=".", help="Directory to save output images")
+    args = parser.parse_args()
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(exist_ok=True)
+
     print("="*100)
     print("VERIFYING LANDMARK REGISTRATION")
     print("="*100)
 
     # Load images
-    baseline_path = "/Users/davidbrewster/Documents/Documents_Brewster/14 August 10_10.jpg"
-    early_path = "/Users/davidbrewster/Documents/Documents_Brewster/15 August 13_17.jpg"
-    late_path = "/Users/davidbrewster/Documents/Documents_Brewster/16 August 10_04.jpg"
-
-    baseline_img = cv2.imread(baseline_path)
-    early_img = cv2.imread(early_path)
-    late_img = cv2.imread(late_path)
+    baseline_img = cv2.imread(args.baseline)
+    early_img = cv2.imread(args.early)
+    late_img = cv2.imread(args.late)
 
     print(f"\n1. Loaded images:")
     print(f"   Baseline: {baseline_img.shape}")
@@ -54,7 +63,7 @@ if __name__ == "__main__":
     print(f"   Late: {late_img.shape}")
 
     # Load landmarks
-    with open("/Users/davidbrewster/Documents/workspace/2025/pathergytest/landmarks.json", 'r') as f:
+    with open(args.landmarks, 'r', encoding='utf-8') as f:
         landmarks = json.load(f)
 
     print(f"\n2. Landmarks extracted by VLM:")
@@ -69,16 +78,19 @@ if __name__ == "__main__":
     early_marked = draw_landmarks_on_image(early_img.copy(), landmarks, 'day1', color='blue')
     late_marked = draw_landmarks_on_image(late_img.copy(), landmarks, 'day2', color='orange')
 
-    cv2.imwrite("/Users/davidbrewster/Documents/workspace/2025/pathergytest/debug_baseline_original_landmarks.jpg", baseline_marked)
-    cv2.imwrite("/Users/davidbrewster/Documents/workspace/2025/pathergytest/debug_early_original_landmarks.jpg", early_marked)
-    cv2.imwrite("/Users/davidbrewster/Documents/workspace/2025/pathergytest/debug_late_original_landmarks.jpg", late_marked)
+    cv2.imwrite(str(output_dir / "debug_baseline_original_landmarks.jpg"), baseline_marked)
+    cv2.imwrite(str(output_dir / "debug_early_original_landmarks.jpg"), early_marked)
+    cv2.imwrite(str(output_dir / "debug_late_original_landmarks.jpg"), late_marked)
     print("   ✓ Saved original images with landmarks")
 
     # Compute transforms
     print("\n4. Computing affine transforms...")
 
     # Get landmark points
-    baseline_points = np.array([landmarks['day0'][f] for f in ['marker', 'vein', 'freckle', 'arm_edge']], dtype=np.float32)
+    baseline_points = np.array(
+        [landmarks['day0'][f] for f in ['marker', 'vein', 'freckle', 'arm_edge']],
+        dtype=np.float32
+    )
     early_points = np.array([landmarks['day1'][f] for f in ['marker', 'vein', 'freckle', 'arm_edge']], dtype=np.float32)
     late_points = np.array([landmarks['day2'][f] for f in ['marker', 'vein', 'freckle', 'arm_edge']], dtype=np.float32)
 
@@ -103,9 +115,9 @@ if __name__ == "__main__":
     early_warped_check = draw_landmarks_on_image(early_warped.copy(), landmarks, 'day0', color='green')
     late_warped_check = draw_landmarks_on_image(late_warped.copy(), landmarks, 'day0', color='green')
 
-    cv2.imwrite("/Users/davidbrewster/Documents/workspace/2025/pathergytest/debug_baseline_check.jpg", baseline_check)
-    cv2.imwrite("/Users/davidbrewster/Documents/workspace/2025/pathergytest/debug_early_warped_check.jpg", early_warped_check)
-    cv2.imwrite("/Users/davidbrewster/Documents/workspace/2025/pathergytest/debug_late_warped_check.jpg", late_warped_check)
+    cv2.imwrite(str(output_dir / "debug_baseline_check.jpg"), baseline_check)
+    cv2.imwrite(str(output_dir / "debug_early_warped_check.jpg"), early_warped_check)
+    cv2.imwrite(str(output_dir / "debug_late_warped_check.jpg"), late_warped_check)
     print("   ✓ Saved warped images with BASELINE landmarks")
     print("   → If registration worked, landmarks should be at SAME positions in all images")
 
@@ -129,7 +141,7 @@ if __name__ == "__main__":
     cv2.putText(composite, "Day 1 (Registered)", (new_w + 10, 30), font, 1, (0, 255, 0), 2)
     cv2.putText(composite, "Day 2 (Registered)", (2*new_w + 10, 30), font, 1, (0, 255, 0), 2)
 
-    cv2.imwrite("/Users/davidbrewster/Documents/workspace/2025/pathergytest/debug_registration_verification.jpg", composite)
+    cv2.imwrite(str(output_dir / "debug_registration_verification.jpg"), composite)
     print("   ✓ Saved verification composite")
 
     print("\n" + "="*100)
