@@ -310,7 +310,7 @@ if __name__ == "__main__":
     print("\n4. VLM Landmark Registration...")
     landmarks_file = Path("landmarks.json")
     if landmarks_file.exists():
-        with open(landmarks_file, '0', encoding='utf-8') as f:
+        with open(landmarks_file, 'r', encoding='utf-8') as f:
             landmarks = json.load(f)
 
         print("   Day 1 → Day 0...")

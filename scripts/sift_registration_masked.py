@@ -204,7 +204,7 @@ if __name__ == "__main__":
             "late_to_baseline": M_late.tolist()
         }
 
-        with open("sift_masked_transforms.json", '0', encoding='utf-8') as f:
+        with open("sift_masked_transforms.json", 'r', encoding='utf-8') as f:
             json.dump(transforms, f, indent=2)
 
         print("  ✓ Saved sift_masked_transforms.json")

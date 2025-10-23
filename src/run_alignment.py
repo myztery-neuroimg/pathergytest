@@ -10,7 +10,7 @@ import argparse
 import logging
 
 # Import the main functions directly
-from main import (
+from src.main import (
     load_image,
     intelligent_precrop,
     preprocess_image,
@@ -19,12 +19,12 @@ from main import (
     common_content_bbox,
     detect_papules_red,
     draw_boxes,
-    generate_pathergy_montage,
+    build_montage,
     configure_logging
 )
 
 # Import landmark extraction if needed
-from get_anatomical_landmarks_final import get_claude_anatomical_landmarks, parse_landmarks
+from src.get_anatomical_landmarks_final import get_claude_anatomical_landmarks, parse_landmarks
 
 
 def run_pathergy_alignment(baseline_path, early_path, late_path,
@@ -154,26 +154,40 @@ def run_pathergy_alignment(baseline_path, early_path, late_path,
     early_points_base = baseline_points
     late_points_base = baseline_points
 
-    # Generate montage
-    logging.info("Generating pathergy timeline montage...")
-    montage = generate_pathergy_montage(
-        baseline_cropped,
-        early_warped_cropped,
-        late_warped_cropped,
-        baseline_points,
-        early_points_base,
-        late_points_base,
-        output_path=output_dir / "pathergy_timeline_composite.jpg",
-        radius=50
-    )
-
-    logging.info(f"Composite saved to {output_dir / 'pathergy_timeline_composite.jpg'}")
-
-    # Save tracked sites images
+    # Create panels with tracked sites
+    logging.info("Creating tracked site visualizations...")
     if baseline_points:
         baseline_with_boxes = draw_boxes(baseline_cropped, baseline_points, "Baseline Sites", radius=50)
         early_with_boxes = draw_boxes(early_warped_cropped, early_points_base, "Tracked Sites (Day 1)", radius=50)
         late_with_boxes = draw_boxes(late_warped_cropped, late_points_base, "Tracked Sites (Day 2)", radius=50)
+
+        # Generate montage from panels
+        logging.info("Generating pathergy timeline montage...")
+        panels = [baseline_with_boxes, early_with_boxes, late_with_boxes]
+        montage = build_montage(
+            panels,
+            padding=20,
+            caption="Pathergy Test Timeline (Baseline-aligned)"
+        )
+    else:
+        # No sites detected, create simple montage
+        logging.warning("No puncture sites detected, creating simple montage")
+        panels = [baseline_cropped, early_warped_cropped, late_warped_cropped]
+        montage = build_montage(
+            panels,
+            padding=20,
+            caption="Pathergy Test Timeline (No sites detected)"
+        )
+        baseline_with_boxes = baseline_cropped
+        early_with_boxes = early_warped_cropped
+        late_with_boxes = late_warped_cropped
+
+    # Save montage
+    montage.save(output_dir / "pathergy_timeline_composite.jpg", quality=95)
+    logging.info("Composite saved to %s", output_dir / "pathergy_timeline_composite.jpg")
+
+    # Save individual tracked sites images
+    if baseline_points:
 
         baseline_with_boxes.save(output_dir / "baseline_tracked_sites.jpg", quality=95)
         early_with_boxes.save(output_dir / "early_tracked_sites.jpg", quality=95)
@@ -217,7 +231,7 @@ def extract_landmarks_for_images(baseline_path, early_path, late_path, use_claud
         landmarks_file = Path('landmarks.json')
         if landmarks_file.exists():
             import json
-            with open(landmarks_file, '0', encoding='utf-8') as f:
+            with open(landmarks_file, 'r', encoding='utf-8') as f:
                 landmarks = json.load(f)
             logging.info("Using existing landmarks.json")
         else:
@@ -281,7 +295,7 @@ def main():
             args.baseline, args.early, args.late, use_claude=True
         )
         import json
-        with open('landmarks.json', '0', encoding='utf-8') as f:
+        with open('landmarks.json', 'r', encoding='utf-8') as f:
             json.dump(landmarks, f, indent=2)
         logging.info("Saved landmarks to landmarks.json")
 

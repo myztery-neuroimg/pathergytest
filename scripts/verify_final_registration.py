@@ -35,7 +35,7 @@ if __name__ == "__main__":
 
     # Load landmarks
     landmarks_path = Path("landmarks.json")
-    with open(landmarks_path, '0', encoding='utf-8') as f:
+    with open(landmarks_path, 'r', encoding='utf-8') as f:
         landmarks = json.load(f)
 
     # Crop bboxes from pipeline
