@@ -4,3 +4,4 @@ Pillow
 scikit-image
 scipy
 pylint
+requests
