@@ -163,13 +163,13 @@ def get_api_key() -> str:
     return api_key
 
 
-def encode_image_safely(image: Image.Image, format: str = 'JPEG', quality: int = 85) -> str:
+def encode_image_safely(image: Image.Image, img_format: str = 'JPEG', quality: int = 85) -> str:
     """
     Safely encode image to base64.
 
     Args:
         image: PIL Image to encode
-        format: Output format (JPEG or PNG)
+        img_format: Output format (JPEG or PNG)
         quality: JPEG quality (1-100)
 
     Returns:
@@ -179,15 +179,15 @@ def encode_image_safely(image: Image.Image, format: str = 'JPEG', quality: int =
 
     # Save to bytes buffer
     buffer = io.BytesIO()
-    if format.upper() == 'JPEG':
+    if img_format.upper() == 'JPEG':
         # Convert RGBA to RGB for JPEG
         if image.mode == 'RGBA':
             rgb_image = Image.new('RGB', image.size, (255, 255, 255))
             rgb_image.paste(image, mask=image.split()[3] if len(image.split()) > 3 else None)
             image = rgb_image
-        image.save(buffer, format=format, quality=quality, optimize=True)
+        image.save(buffer, format=img_format, quality=quality, optimize=True)
     else:
-        image.save(buffer, format=format, optimize=True)
+        image.save(buffer, format=img_format, optimize=True)
 
     # Encode to base64
     buffer.seek(0)
@@ -257,7 +257,7 @@ def call_claude_api(images: List[Image.Image], prompt: str, api_key: str) -> Dic
 
             if response.status_code == 200:
                 return response.json()
-            elif response.status_code == 429:  # Rate limit
+            if response.status_code == 429:  # Rate limit
                 import time
                 wait_time = min(2 ** attempt, 10)  # Exponential backoff
                 logging.warning(f"Rate limited, waiting {wait_time}s...")

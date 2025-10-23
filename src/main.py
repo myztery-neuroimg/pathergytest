@@ -602,7 +602,7 @@ def affine_register(
             if not landmarks_file.exists():
                 logging.warning(
                     "Landmarks file not found at %s, falling back to ECC registration",
-                    landmarks_path
+                    landmarks_file
                 )
             else:
                 logging.info(
@@ -611,7 +611,7 @@ def affine_register(
                 )
 
                 # Load landmarks
-                with open(landmarks_file, 'r') as f:
+                with open(landmarks_file, 'r', encoding='utf-8') as f:
                     landmarks = json.load(f)
 
                 # Get corresponding points
@@ -1476,29 +1476,6 @@ def warp_to_base(src_pil: Image.Image, matrix: np.ndarray, size: Tuple[int, int]
     return Image.fromarray(cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
 
 
-def common_content_bbox(panels: Sequence[Image.Image]) -> Tuple[int, int, int, int] | None:
-    """Compute a bounding box that contains shared non-empty content across ``panels``."""
-
-    if not panels:
-        return None
-
-    masks = []
-    for panel in panels:
-        gray = np.array(panel.convert("L"))
-        mask = gray > 0
-        if not np.any(mask):
-            return None
-        masks.append(mask)
-
-    combined = np.logical_and.reduce(masks)
-    if not np.any(combined):
-        return None
-
-    ys, xs = np.nonzero(combined)
-    top, bottom = ys.min(), ys.max()
-    left, right = xs.min(), xs.max()
-    # Pillow crop uses half-open coordinates, so include the final pixel by +1.
-    return int(left), int(top), int(right) + 1, int(bottom) + 1
 def _content_mask(pil_img: Image.Image, *, threshold: int = 5) -> np.ndarray:
     """Return a boolean mask of pixels that contain visual content."""
 
@@ -1522,7 +1499,8 @@ def _refine_mask(
         mask = mask.astype(np.uint8) * 255
 
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-    refined = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    # Use only 1 iteration to avoid excessive expansion of the mask
+    refined = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
     refined = cv2.morphologyEx(refined, cv2.MORPH_OPEN, kernel, iterations=1)
 
     if min_component_area <= 0:
@@ -1602,11 +1580,16 @@ def common_content_bbox(
     for mask in refined_masks[1:]:
         intersection = cv2.bitwise_and(intersection, mask)
 
-    intersection = _refine_mask(
-        intersection,
-        kernel_size=kernel_size,
-        min_component_area=min_component_area,
-    )
+    # Don't refine the intersection again - it would expand the mask too much.
+    # Just remove very small noise components.
+    if min_component_area > 0:
+        intersection_uint8 = intersection if intersection.dtype == np.uint8 else intersection.astype(np.uint8) * 255
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(intersection_uint8)
+        filtered = np.zeros_like(intersection_uint8)
+        for idx in range(1, num_labels):
+            if stats[idx, cv2.CC_STAT_AREA] >= min_component_area:
+                filtered[labels == idx] = 255
+        intersection = filtered
 
     shared_component_areas = _component_areas(intersection)
     if shared_component_areas:
