@@ -1,3 +1,7 @@
 opencv-python
 numpy
 Pillow
+scikit-image
+scipy
+pylint
+requests

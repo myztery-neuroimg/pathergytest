@@ -1,0 +1,26 @@
+{
+  "day0": {
+    "marker": [480, 300],
+    "vein": [550, 450],
+    "freckle": [400, 550],
+    "arm_edge": [200, 600]
+  },
+  "day1": {
+    "marker": [250, 400],
+    "vein": [350, 500],
+    "freckle": [300, 600],
+    "arm_edge": [150, 700]
+  },
+  "day2": {
+    "marker": [500, 250],
+    "vein": [450, 400],
+    "freckle": [400, 500],
+    "arm_edge": [300, 600]
+  },
+  "_comments": {
+    "marker": "Hair transition line (dense to sparse boundary)",
+    "vein": "Upper distinctive hair cluster",
+    "freckle": "Lower hair pattern",
+    "arm_edge": "Arm outline curve"
+  }
+}

@@ -1,0 +1,86 @@
+[MASTER]
+# Use multiple processes to speed up Pylint
+jobs=0
+
+# Pickle collected data for later comparisons
+persistent=yes
+
+[MESSAGES CONTROL]
+# Disable specific warnings
+disable=
+    # OpenCV (cv2) generates many false positives for missing members
+    no-member,
+    # Allow catching cv2.error which pylint doesn't recognize
+    catching-non-exception,
+    # Allow duplicate code in similar registration methods
+    duplicate-code,
+    # Allow redefining names from outer scope in function parameters
+    redefined-outer-name,
+    # Allow f-strings without interpolation for consistency
+    f-string-without-interpolation,
+    # Design issues that are acceptable for this codebase
+    too-many-locals,
+    too-many-statements,
+    too-many-branches,
+    too-many-lines,
+    # Allow unused imports and variables (will be cleaned up separately)
+    unused-import,
+    unused-variable,
+    unused-argument,
+    # Import order (will follow black/isort if needed)
+    wrong-import-order,
+    # Allow reimports and imports outside toplevel for conditional imports
+    reimported,
+    import-outside-toplevel
+
+[FORMAT]
+# Maximum number of characters on a single line
+max-line-length=120
+
+# Maximum number of lines in a module
+max-module-lines=1500
+
+[BASIC]
+# Good variable names which should always be accepted
+good-names=i,j,k,x,y,w,h,M,cx,cy,dx,dy,_,f,e,b,l,tx,ty
+
+# Naming style for constants - allow lowercase for module-level assignments
+const-naming-style=any
+
+[DESIGN]
+# Maximum number of arguments for function / method
+max-args=8
+
+# Maximum number of attributes for a class
+max-attributes=10
+
+# Maximum number of local variables for function / method body
+max-locals=20
+
+# Maximum number of return / yield for function / method body
+max-returns=6
+
+# Maximum number of branch for function / method body
+max-branches=15
+
+# Maximum number of statements in function / method body
+max-statements=60
+
+[IMPORTS]
+# Allow any import order - we'll fix this separately
+known-third-party=cv2,numpy,PIL,scipy,skimage,requests
+
+[TYPECHECK]
+# List of module names for which member attributes should not be checked
+ignored-modules=cv2,numpy,PIL
+
+# List of classes names for which member attributes should not be checked
+ignored-classes=cv2,numpy,PIL
+
+[SIMILARITIES]
+# Minimum lines number of a similarity
+min-similarity-lines=10
+
+[VARIABLES]
+# Allow unused variables when they start with _
+dummy-variables-rgx=_.*

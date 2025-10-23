@@ -1,0 +1,19 @@
+*.jpg
+*.png
+.git
+.venv
+__pycache__/
+*.pyc
+.DS_Store
+
+# Secret keys and sensitive data
+.webui_secret_key
+*.key
+*.secret
+*_secret_key
+
+# User-specific notes and test commands
+GITHUB_AUTH_NOTES.md
+TEST_COMMAND.sh
+CLEAN_BEFORE_PUSH.sh
+sapiens/
