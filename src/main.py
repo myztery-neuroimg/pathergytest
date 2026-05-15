@@ -653,20 +653,42 @@ def affine_register(
                         len(src_points)
                     )
                 else:
-                    # Use first 3 points for affine transform
-                    warp_matrix = cv2.getAffineTransform(src_points[:3], dst_points[:3])
+                    # Use all available landmarks with RANSAC for robustness.
+                    # estimateAffine2D overdetermines the system (6 DOF, 4+ points)
+                    # and uses RANSAC to reject outlier landmark localisations.
+                    # This is more defensible than exact 3-point getAffineTransform,
+                    # which has zero tolerance for any localization error.
+                    warp_matrix, inlier_mask = cv2.estimateAffine2D(
+                        src_points, dst_points,
+                        method=cv2.RANSAC,
+                        ransacReprojThreshold=3.0,
+                        maxIters=2000,
+                        confidence=0.99
+                    )
 
-                    # Compute alignment quality metrics
-                    alignment_errors = []
-                    for src_pt, dst_pt in zip(src_points, dst_points):
-                        error = np.linalg.norm(src_pt - dst_pt)
-                        alignment_errors.append(error)
+                    if warp_matrix is None:
+                        logging.warning(
+                            "RANSAC affine estimation failed (insufficient inliers); "
+                            "falling back to exact 3-point transform"
+                        )
+                        warp_matrix = cv2.getAffineTransform(src_points[:3], dst_points[:3])
+                        inlier_mask = np.ones((len(src_points), 1), dtype=np.uint8)
+
+                    n_inliers = int(np.sum(inlier_mask)) if inlier_mask is not None else len(src_points)
+
+                    # Compute reprojection errors on all points post-transform
+                    ones = np.ones((len(src_points), 1), dtype=np.float32)
+                    src_homo = np.hstack([src_points, ones])  # Nx3
+                    projected = (warp_matrix @ src_homo.T).T  # Nx2
+                    reproj_errors = np.linalg.norm(projected - dst_points, axis=1)
 
                     logging.info(
-                        "Landmark registration complete: %d points, mean error=%.2f px, max error=%.2f px",
+                        "Landmark registration (RANSAC): %d/%d inliers, "
+                        "reprojection mean=%.2f px, max=%.2f px",
+                        n_inliers,
                         len(src_points),
-                        np.mean(alignment_errors),
-                        np.max(alignment_errors)
+                        float(np.mean(reproj_errors)),
+                        float(np.max(reproj_errors)),
                     )
 
                     # Decompose transform for logging

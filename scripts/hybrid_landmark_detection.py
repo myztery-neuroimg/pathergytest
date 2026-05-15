@@ -212,7 +212,7 @@ if __name__ == "__main__":
     for feature in ['marker', 'vein', 'freckle', 'arm_edge']:
         print (f"Analysing {feature}s")
         found_in = [day for day in ['day0', 'day1', 'day2'] if feature in landmarks.get(day, {})]
-        printf ("{feature} found in {found_in}")
+        print(f"{feature} found in {found_in}")
         if len(found_in) == 3:
             print(f"✓ {feature:12s}: Found in all 3 images")
             valid_count += 1
