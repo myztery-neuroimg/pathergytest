@@ -11,4 +11,5 @@ dependencies = [
     "pylint>=4.0.2",
     "scikit-image>=0.25.2",
     "scipy>=1.16.2",
+    "requests==2.32.5",
 ]
